@@ -1,0 +1,21 @@
+{
+  "name": "@see2et/pi-understanding",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pinned-scope learning dialogue in a noncapturing Pi side pane",
+  "keywords": ["pi-package"],
+  "pi": { "extensions": ["./src/extension.ts"] },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": { "@types/node": "^24.0.0", "typescript": "^5.9.3" },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test tests/*.test.ts"
+  },
+  "engines": { "node": ">=24" }
+}
