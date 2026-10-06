@@ -25,7 +25,7 @@ export const HELP = `理解ペインは通常チャットとは別のGPT会話�
 /understand handoff — 内容を編集・確認して実装チャットへ明示送信
 /understand diagram — 根拠付きマップのみHTML保存・表示
 /understand reset | forget — 会話消去 / 現在スコープを削除
-Ctrl+Alt+U: 通常入力と学習入力の切替（両方の下書きを保持）。fullscreenではペインをクリックして学習入力。
+Ctrl+Alt+U: 通常入力と学習入力の切替（両方の下書きを保持）。fullscreenではペインのクリックで学習入力、露出した通常入力欄のクリックで通常入力。
 学習入力: Ctrl+T 対象選択、Esc/Ctrl+G 通常入力、Ctrl+C 学習中止、Ctrl+D 閉じる、Ctrl+O 広表示、PgUp/PgDn 履歴。
 110列未満では背景ペインを隠します。focusで広表示。ペインは重ね表示で、通常チャットの幅は変えません。`;
 export function parseScope(args: string): ScopeRequest {

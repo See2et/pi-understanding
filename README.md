@@ -38,7 +38,9 @@ Nix側のrevision更新はルートflake.lockで行います。Piの認証・設
 
 `/understand`・`open`は入力を奪わない背景表示です。入力先を変えるには`/understand focus`、`wide`、またはCtrl+Alt+Uを使ってください。Ctrl+Alt+UはPiの`/hotkeys`、ステータスとペイン下部にも表示します。対象未選択時は`/understand scope`を案内し、下書きを消したり勝手に対象を選んだりしません。
 
-fullscreenでは学習ペイン内の左クリックでも学習入力に切り替えられます。Piのnative mouse APIだけを使い、regular modeではmouse trackingを有効にしません。regular modeでも同じCtrl+Alt+U・Esc・Ctrl+Gが使えます。
+fullscreenでは学習ペイン内の左クリックで学習入力へ、ペインに隠れていない通常入力欄の左クリックで通常入力へ戻れます。両方の下書きを保持し、通常入力に戻るとペインは背景表示になります。狭幅では背景ペインを隠すため、学習へ戻るにはCtrl+Alt+Uを使います。Piのnative mouse APIだけを使い、regular modeではmouse trackingを有効にしません。regular modeでも同じCtrl+Alt+U・Esc・Ctrl+Gが使えます。
+
+Pi 1.0.4は通常editorへのクリック後もoverlayの入力復帰予約を保持します。このversionへの互換処理として、ペイン表示中だけ既存editorの`handleMouse`を包み、完了した左クリックが入力focusを要求した場合にoverlay handleを明示的に`unfocus({ target: editor })`します。通常editorの元の結果とcursor操作はそのままPiへ返します。close・reload・geometry再mount時にwrapperを解除し、独自editorやrendererは作りません。
 
 ### 操作
 
@@ -147,6 +149,6 @@ python3 tests/screenshots.py  # Firefoxの隔離profileで両modeのPNGを作り
 
 `native-qa.py`のbinary既定値は開発時のNix Pi 1.0.4です。他のbinaryでは`PI_UNDERSTANDING_BINARY=/path/to/pi`を指定します。専用config directoryとfixture repositoryを`.evidence/native-qa`に作り、個人のauth/settingsを開かず、明示ロードしたdeterministic providerだけを使います。実際の有料推論やnetwork inferenceは行いません。QA providerはpackage manifestに含めません。
 
-検証は本番のscope、runner、pane、extensionを使います。未commit分のindex/worktree/削除/未追跡source、branchの固定・移動、AI選択の確認境界、scope isolation、引用のexact一致、path traversal、symlink、HTML escape、active branch restore、会話分離、native failure/usage/cancellation、publication/handoffをテストします。実Pi RPCでnode_modulesのないraw sourceのloaderを確認し、PTYのfullscreen/regular両方で`focus`・初回`wide`送信後の入力所有、Ctrl+Alt+Uの往復と両方の下書き保持（120/80/160列）、fullscreenの左クリック入力、sessionに保存された質問の通常/学習振分け、背景入力、日本語paste/cursor marker、根拠付きマップ、通常chat、狭幅fallback、resize、cancel、failure、reloadを確認します。
+検証は本番のscope、runner、pane、extensionを使います。未commit分のindex/worktree/削除/未追跡source、branchの固定・移動、AI選択の確認境界、scope isolation、引用のexact一致、path traversal、symlink、HTML escape、active branch restore、会話分離、native failure/usage/cancellation、publication/handoffをテストします。実Pi RPCでnode_modulesのないraw sourceのloaderを確認し、PTYのfullscreen/regular両方で`focus`・初回`wide`送信後の入力所有、Ctrl+Alt+Uの往復と両方の下書き保持（120/80/160列）、fullscreenの左右入力先への完了したクリックと下書き保持（side・wide・narrow）、sessionに保存された質問の通常/学習振分け、背景入力、日本語paste/cursor marker、根拠付きマップ、通常chat、狭幅fallback、resize、cancel、failure、reloadを確認します。
 
 `.evidence/native-qa`にANSI stream、RPC記録、viewport別text/HTML、render-checks、source hashが残ります。`render-captures.mjs`のHTMLはANSIをxtermへreplayしたterminal gridです。Firefoxのheadless screenshotなどでPNGにできます。物理IMEのcandidate popup位置・macOS実機・実GitHub PR fetch・有料native GPT response品質はこのdeterministic QAだけでは確認できません。release受入れには独立reviewとホスト側Nix eval/buildを別途行います。

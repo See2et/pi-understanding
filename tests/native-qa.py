@@ -122,10 +122,34 @@ command('/understand map'); drain(3); command('/understand focus'); send('\x1b[5
 # Background pane must not own ordinary input.
 send('main-input-still-active'); capture('main-input-background-120x36', 120, 36)
 send('\x15'); focus_roundtrip('wide', 120, 36)
+def click(x, y):
+    # Completed native SGR click; never enable mouse tracking from the extension/test.
+    send(f'\x1b[<0;{x};{y}M\x1b[<0;{x};{y}m')
+def mouse_roundtrip(label, cols, rows):
+    send('mouse-main-' + label)
+    if cols < 110: send(SHORTCUT)  # narrow background is intentionally hidden
+    else: click(90, 3)
+    send('mouse-learner-' + label); capture('click-focus-' + label, cols, rows)
+    # At narrow width only the left edge of the native main editor is exposed.
+    click(1, rows - 4); send('\x05'); send('-tail')
+    capture('click-main-' + label, cols, rows)
+    if cols < 110: send(SHORTCUT)
+    else: click(90, 3)
+    send('-tail'); capture('click-preserved-' + label, cols, rows)
+    send('\r'); drain(3)
+    click(1, rows - 4); send('\r'); drain(1)
+    learner_probes.append('mouse-learner-' + label + '-tail')
+    main_probes.append('mouse-main-' + label + '-tail')
+if MODE == 'fullscreen': mouse_roundtrip('side-120x36', 120, 36)
+# Explicit wide geometry also releases/collapses without losing either draft.
 if MODE == 'fullscreen':
-    # Primary click at (90, 3) lies inside the right-side native overlay.
-    send('\x1b[<0;90;3M\x1b[<0;90;3m'); send('click-focus-probe'); capture('click-focus-input-120x36', 120, 36)
-    send('\r'); drain(3); send(SHORTCUT); learner_probes.append('click-focus-probe')
+    send('mouse-main-wide-120x36')
+    send(SHORTCUT); send('\x0f')
+    send('mouse-learner-wide-120x36'); capture('click-focus-wide-120x36', 120, 36)
+    click(1, 32); send('\x05'); send('-tail'); capture('click-main-wide-120x36', 120, 36)
+    click(90, 3); send('-tail'); capture('click-preserved-wide-120x36', 120, 36)
+    send('\r'); drain(3); click(1, 32); send('\r'); drain(1)
+    learner_probes.append('mouse-learner-wide-120x36-tail'); main_probes.append('mouse-main-wide-120x36-tail')
 command('/understand focus')
 send('\x1b[200~質問：責任を説明してください\x1b[201~'); capture('japanese-focused-120x36', 120, 36)
 send('\r'); drain(3); capture('learning-dialogue-120x36', 120, 36)
@@ -133,6 +157,7 @@ send('\x1b'); command('main-chat-probe'); drain(.8); capture('main-chat-operatio
 command('/understand focus'); send('WAIT_CANCEL\r'); drain(.2); send('\x03'); drain(2); capture('cancelled-learning-120x36', 120, 36)
 send('\x1b'); resize(80, 24); capture('narrow-background-hidden-80x24', 80, 24)
 focus_roundtrip('narrow', 80, 24)
+if MODE == 'fullscreen': mouse_roundtrip('narrow-80x24', 80, 24)
 command('/understand focus'); capture('narrow-focus-fallback-80x24', 80, 24)
 resize(160, 48); capture('wide-focused-160x48', 160, 48)
 send('\x1b'); focus_roundtrip('large', 160, 48)

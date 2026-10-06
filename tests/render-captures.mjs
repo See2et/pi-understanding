@@ -43,7 +43,18 @@ for (const label of ['wide', 'narrow', 'large']) {
   const ok = learning.includes('学習 > learner-draft-' + label) && main.includes('main-draft-' + label + '-tail') && preserved.includes('学習 > learner-draft-' + label + '-tail');
   focusChecks.push({ label, ok });
 }
-if (process.argv[2] !== 'regular') focusChecks.push({ label: 'fullscreen-click', ok: (await textAt('click-focus-input-120x36')).includes('学習 > click-focus-probe') });
+if (process.argv[2] !== 'regular') {
+  for (const label of ['side-120x36', 'wide-120x36', 'narrow-80x24']) {
+    const learning = await textAt('click-focus-' + label);
+    const main = await textAt('click-main-' + label);
+    const preserved = await textAt('click-preserved-' + label);
+    focusChecks.push({ label: 'fullscreen-mouse-' + label, ok:
+      learning.includes('学習 > mouse-learner-' + label) &&
+      main.includes('mouse-main-' + label + '-tail') &&
+      (label.startsWith('narrow') ? !main.includes('snapshot') : main.includes('通常チャットに入力')) &&
+      preserved.includes('学習 > mouse-learner-' + label + '-tail') });
+  }
+}
 focusChecks.push({ label: 'command-focus', ok: (await textAt('command-focus-input-120x36')).includes('学習 > command-focus-probe') });
 await writeFile(new URL('focus-render-checks.json', root), JSON.stringify(focusChecks, null, 2));
 const required = [

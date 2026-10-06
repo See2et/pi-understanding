@@ -48,6 +48,24 @@ test("geometry remount retains the native draft cursor and shortcut releases; on
   assert.equal(remounted.handleMouse({ ...mouse, button: "right" }), undefined);
 });
 
+test("main native click releases overlay lifetime without replacing cursor behavior; dispose restores handler", () => {
+  initTheme("dark", false);
+  const nativeResult = { handled: true, focus: true };
+  const main = { render: () => [], invalidate: () => {}, handleMouse: (event: TuiMouseEvent) => event.type === "click" ? nativeResult : undefined };
+  const original = main.handleMouse;
+  const tui = { mode: "fullscreen", terminal: { columns: 120, rows: 36 }, requestRender: () => {}, getFocusedComponent: () => main } as unknown as TUI;
+  const pane = new UnderstandingPane(tui, theme, () => undefined, { ask: () => {}, cancel: () => {}, close: () => {}, running: () => false });
+  let target: unknown;
+  pane.handle = { unfocus: (options: { target: unknown }) => { target = options.target; } } as unknown as OverlayHandle;
+  assert.equal(main.handleMouse({ type: "press", button: "left" } as TuiMouseEvent), undefined);
+  assert.equal(target, undefined);
+  assert.equal(main.handleMouse({ type: "click", button: "left" } as TuiMouseEvent), nativeResult);
+  assert.equal(target, main);
+  pane.dispose(); assert.equal(main.handleMouse, original);
+  const regular = new UnderstandingPane({ ...tui, mode: "regular" } as TUI, theme, () => undefined, { ask: () => {}, cancel: () => {}, close: () => {}, running: () => false });
+  assert.equal(main.handleMouse, original); regular.dispose();
+});
+
 test("untrusted terminal control sequences are not emitted", () => {
   assert.equal(terminalText("hello\x1b[2J\x1b]52;c;secret\x07world"), "helloworld");
   assert.ok(!/[\x80-\x9f]/.test(terminalText("\u009b2J\u009d52;data")));

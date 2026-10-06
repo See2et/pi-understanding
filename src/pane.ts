@@ -23,9 +23,30 @@ export class UnderstandingPane implements Component, Focusable {
   private tui: TUI;
   private theme: Theme;
   private current: () => Learning | undefined;
+  private restoreMainMouse?: () => void;
   private actions: { ask: (text: string) => void; cancel: () => void; close: () => void; running: () => boolean; choose?: () => void; layout?: (wide: boolean, focus: boolean) => void };
   constructor(tui: TUI, theme: Theme, current: () => Learning | undefined, actions: { ask: (text: string) => void; cancel: () => void; close: () => void; running: () => boolean; choose?: () => void; layout?: (wide: boolean, focus: boolean) => void }, wide = false, view?: PaneView) {
     this.tui = tui; this.theme = theme; this.current = current; this.actions = actions; this.wide = wide;
+    // Pi 1.0.4's concrete TUI exposes the focus owner (not yet in its TUI interface).
+    // Adapt the existing editor only while this pane lives; never replace its renderer/input.
+    const main = (tui as TUI & { getFocusedComponent?: () => Component | null }).getFocusedComponent?.();
+    if (tui.mode === "fullscreen" && main?.handleMouse) {
+      const original = main.handleMouse;
+      const owned = Object.hasOwn(main, "handleMouse");
+      const mouse: NonNullable<Component["handleMouse"]> = event => {
+        const result = original.call(main, event);
+        // A native editor click positions its cursor and requests focus, but Pi retains
+        // the overlay's eligible focus restore. Clear that lifetime through its handle.
+        if (event.type === "click" && event.button === "left" && result?.focus) this.release(main);
+        return result;
+      };
+      main.handleMouse = mouse;
+      this.restoreMainMouse = () => {
+        if (main.handleMouse !== mouse) return; // do not overwrite a later extension's handler
+        if (owned) main.handleMouse = original;
+        else delete main.handleMouse;
+      };
+    }
     if (view) {
       if (view.editor) this.input = view.editor;
       else { this.input.setValue(view.input); this.input.handleInput("\x05"); }
@@ -48,8 +69,9 @@ export class UnderstandingPane implements Component, Focusable {
     this.handle?.setHidden(false); this.handle?.focus(); this.redraw(this.partial);
   }
   view(): PaneView { return { input: this.input.getValue(), editor: this.input, offset: this.offset, partial: this.partial, error: this.error }; }
-  release(): void {
-    this.handle?.unfocus();
+  dispose(): void { this.restoreMainMouse?.(); this.restoreMainMouse = undefined; }
+  release(target?: Component): void {
+    this.handle?.unfocus(target ? { target } : undefined);
     if (this.wide && this.actions.layout) { this.actions.layout(false, false); return; }
     this.wide = false; this.redraw(this.partial);
   }
