@@ -20,8 +20,8 @@ export class UnderstandingPane implements Component, Focusable {
   private tui: TUI;
   private theme: Theme;
   private current: () => Learning | undefined;
-  private actions: { ask: (text: string) => void; cancel: () => void; close: () => void; running: () => boolean; layout?: (wide: boolean, focus: boolean) => void };
-  constructor(tui: TUI, theme: Theme, current: () => Learning | undefined, actions: { ask: (text: string) => void; cancel: () => void; close: () => void; running: () => boolean; layout?: (wide: boolean, focus: boolean) => void }, wide = false, view?: PaneView) {
+  private actions: { ask: (text: string) => void; cancel: () => void; close: () => void; running: () => boolean; choose?: () => void; layout?: (wide: boolean, focus: boolean) => void };
+  constructor(tui: TUI, theme: Theme, current: () => Learning | undefined, actions: { ask: (text: string) => void; cancel: () => void; close: () => void; running: () => boolean; choose?: () => void; layout?: (wide: boolean, focus: boolean) => void }, wide = false, view?: PaneView) {
     this.tui = tui; this.theme = theme; this.current = current; this.actions = actions; this.wide = wide;
     if (view) { this.input.setValue(view.input); this.offset = view.offset; this.partial = view.partial; this.error = view.error; }
     this.input.onSubmit = value => { if (!value.trim()) return; this.actions.ask(value.trim()); this.input.setValue(""); this.offset = 0; this.redraw(); };
@@ -50,6 +50,7 @@ export class UnderstandingPane implements Component, Focusable {
   invalidate(): void { this.cachedKey = ""; this.input.invalidate(); }
   handleInput(data: string): void {
     if (matchesKey(data, "escape") || matchesKey(data, "ctrl+g")) this.release();
+    else if (matchesKey(data, "ctrl+t")) this.actions.choose?.();
     else if (matchesKey(data, "ctrl+c")) { this.actions.cancel(); this.redraw(this.partial); }
     else if (matchesKey(data, "ctrl+d")) this.actions.close();
     else if (matchesKey(data, "ctrl+o")) { if (this.actions.layout) this.actions.layout(!this.wide, true); else { this.wide = !this.wide; this.redraw(this.partial); } }
@@ -68,7 +69,7 @@ export class UnderstandingPane implements Component, Focusable {
     const border = th.fg(this.focused ? "accent" : "border", `╭${"─".repeat(inner)}╮`);
     if (!learning) return [border, row("理解 / スコープ未選択"), row("/understand scope で選択してください"), th.fg("border", `╰${"─".repeat(inner)}╯`)];
     const scope = learning.scope;
-    const label = scope.request.kind === "module" ? `module ${scope.request.module}` : scope.request.kind === "pr" ? `PR #${scope.request.number}` : scope.request.kind;
+    const label = scope.request.kind === "module" ? `module ${scope.request.module}` : scope.request.kind === "pr" ? `PR #${scope.request.number}` : scope.request.kind === "branch" ? `branch ${scope.request.ref}${scope.request.base ? ` ← ${scope.request.base}` : " / 全体"}` : scope.request.kind === "changes" ? "未commit分 / HEAD → 作業状態" : scope.request.kind;
     const header = [
       th.fg("accent", `理解 / ${clean(label)} / ${this.focused ? "学習に入力" : "通常チャットに入力"}`),
       ...wrapTextWithAnsi(clean(scope.root), inner).slice(0, 2),
@@ -93,7 +94,7 @@ export class UnderstandingPane implements Component, Focusable {
     const body = this.cached.slice(Math.max(0, end - this.bodyHeight), end);
     while (body.length < this.bodyHeight) body.push("");
     this.input.focused = this.focused;
-    const footer = th.fg("muted", this.actions.running() ? "Ctrl+C 学習中止 / Esc 通常入力 / PgUp 履歴" : "Esc 通常入力 / Ctrl+O 広表示 / PgUp 履歴");
+    const footer = th.fg("muted", this.actions.running() ? "Ctrl+C 学習中止 / Esc 通常入力 / PgUp 履歴" : "Ctrl+T 対象 / Esc 通常入力 / PgUp 履歴");
     return [border, ...header.map(row), row(th.fg("border", "─".repeat(inner))), ...body.map(row), row(footer), ...this.input.render(inner).map(row), th.fg("border", `╰${"─".repeat(inner)}╯`)];
   }
 }

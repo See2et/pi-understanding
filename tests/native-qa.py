@@ -28,8 +28,10 @@ git('add', '.'); git('commit', '-qm', 'fixture head'); HEAD = git('rev-parse', '
 ENV = {**os.environ, 'PI_CODING_AGENT_DIR': str(OUT / 'config'), 'PI_OFFLINE': '1', 'PI_TELEMETRY': '0', 'TERM': 'xterm-256color', 'COLORTERM': 'truecolor'}
 ARGS = [PI, '--offline', '--no-approve', '--no-extensions', '--no-mcp', '--no-skills', '--no-prompt-templates', '--no-themes', '--no-context-files', '--no-tools', '-e', str(RAW), '-e', str(ROOT / 'tests/fixture-provider.ts'), '--model', 'understanding-qa/gpt-qa', '--thinking', 'off']
 proc = subprocess.Popen([*ARGS, '--mode', 'rpc'], cwd=WORK, env=ENV, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
 records = []
 def rpc(kind, **fields):
+    assert proc.stdin is not None and proc.stdout is not None
     rid = str(len(records)) + kind + str(time.time_ns())
     proc.stdin.write((json.dumps({'id': rid, 'type': kind, **fields}) + '\n').encode()); proc.stdin.flush()
     deadline = time.time() + 15
@@ -70,6 +72,13 @@ proc.stdin.close(); proc.wait(timeout=10)
 (OUT / 'rpc.stderr').write_bytes(proc.stderr.read())
 assert not (OUT / 'rpc.stderr').read_text().strip(), (OUT / 'rpc.stderr').read_text()
 
+# Everyday target flows use actual Git staging/working changes in this isolated fixture only.
+git('branch', 'feature', HEAD)
+BRANCH = git('branch', '--show-current')
+(WORK / 'src/main.ts').write_text('export function submit() { return "staged"; }\n')
+git('add', 'src/main.ts')
+(WORK / 'src/main.ts').write_text('export function submit() { return "working"; }\n')
+(WORK / 'src/new.ts').write_text('export const draft = true;\n')
 master, slave = pty.openpty()
 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 36, 120, 0, 0))
 process = subprocess.Popen([*ARGS, '--tui-mode', MODE, '--session-id', 'understanding-pty-qa'], cwd=WORK, env=ENV, stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
@@ -91,6 +100,8 @@ def capture(name, cols, rows):
 def resize(cols, rows):
     fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0)); os.kill(process.pid, signal.SIGWINCH); drain(.5)
 drain(1.5)
+command('/understand scope changes'); capture('uncommitted-background-120x36', 120, 36)
+command(f'/understand scope branch feature {BRANCH}'); capture('branch-comparison-120x36', 120, 36)
 command('/understand scope repository'); capture('typical-background-120x36', 120, 36)
 command('/understand map'); drain(3); command('/understand focus'); send('\x1b[5~'); capture('grounded-map-120x36', 120, 36); send('\x1b')
 # Background pane must not own ordinary input.

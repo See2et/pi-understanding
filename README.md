@@ -26,12 +26,12 @@ Nix側のrevision更新はルートflake.lockで行います。Piの認証・設
 ## まず使う
 
 ```text
-/understand scope repository
+/understand scope
 /understand map
 /understand focus
 ```
 
-1. 明示的なscopeを選びます。`/understand`だけなら選択画面を開きます。
+1. 理解対象を一覧から選びます。まずは「未commit分」が便利です。branch、最近のcommit、open PRも名前・件名で選べるので、REFやPR番号を覚える必要はありません。`/understand`だけなら初回は選択画面を開きます。
 2. `map`で利用者フローから責任、重要な関数、契約、テストへの小さいマップを作ります。各項目の根拠は固定ref・path・行番号・正確な引用で検証します。全関数の自動graphではありません。
 3. `focus`で学習ペインに入力します。日本語入力はPiのInputとcursor markerを使います。Enterで送信します。
 4. EscまたはCtrl+Gで通常チャットに戻ります。学習AIが回答中でも実装チャットは動作します。
@@ -44,7 +44,10 @@ Nix側のrevision更新はルートflake.lockで行います。Piの認証・設
 | `/understand toggle` / `close` | 一時的に表示切替 / 閉じる |
 | `/understand focus` | 学習側に入力先を切替 |
 | `/understand wide` | 広表示に切替 |
-| `/understand scope` | スコープ選択画面 |
+| `/understand scope` | 未commit分・ローカルbranch・最近のcommit・PRなどを一覧から選択し、固定範囲を確認 |
+| `/understand scope changes` | HEADとindex・worktreeの未commit分を固定 |
+| `/understand scope branch REF [BASE]` | branch全体、またはBASEとのmerge-base以降の変更を固定 |
+| `/understand targets` | AIに相談するためのローカル候補情報（PR取得なし） |
 | `/understand scopes` | 現在のsession branchに保存されたscopeを選択 |
 | `/understand focus src/handler.ts:submit` | 学習の焦点だけを変更。scopeは変えない |
 | `/understand ask ここで失敗した場合は？` | 独立した学習会話へ質問 |
@@ -53,12 +56,16 @@ Nix側のrevision更新はルートflake.lockで行います。Piの認証・設
 | `/understand reference src/handler.ts base` | 比較元の固定コードを表示 |
 | `/understand check` | 明示的に鮮度を確認 |
 | `/understand refresh` | 同じ種類のscopeを現在の情報から取り直す |
-| `/understand questions on` / `off` | milestoneでの任意の理解確認。既定はoff |
+| `/understand questions on` / `off` | milestoneでの任意の理解確認。新しいscopeではon。保存済み設定は保持 |
 | `/understand handoff` | 送る内容を編集し、確認してから通常チャットへfollow-up送信 |
 | `/understand diagram` | マップと根拠だけの静的HTML/SVGを保存し、ブラウザで開く |
 | `/understand reset` | 確認後に現在scopeの会話・マップを消去。固定根拠は保持 |
 | `/understand forget` | 確認後に現在scopeを削除 |
 | `/understand help` | 操作一覧 |
+
+ペイン内のCtrl+Tで、いつでも対象選択を開けます。通常の学習対話は固定根拠だけを見るので、最新のbranchやPRを勝手に調べて対象を切り替えません。
+
+実装側のAIには「今の未commit分を理解したい」「どのcommitか覚えていないので候補を調べて」と相談できます。`understanding_targets`で現在branch・変更ファイル・ローカルbranch・最近のcommitの候補を調べ、必要ならユーザーに質問します。PR一覧はユーザーが求めた場合だけ取得します。`select_understanding_scope`で提案を受けても、固定した対象・base/head・snapshotを確認してから選択します。学習会話はこれらのtoolに渡しません。
 
 ペイン内ではCtrl+Cが学習呼出しだけを中止します。通常チャットのagentを中止しません。Ctrl+Dで閉じ、Ctrl+Oで広表示を切り替え、PgUp/PgDnでマップ・根拠・会話をスクロールします。新しい質問は会話末尾へ移動します。マップを見るにはPgUpを使います。
 
@@ -67,12 +74,17 @@ Nix側のrevision更新はルートflake.lockで行います。Piの認証・設
 ## スコープと固定根拠
 
 ```text
+/understand scope changes
+/understand scope branch feature
+/understand scope branch feature main
 /understand scope repository
 /understand scope module src/payments
 /understand scope commit HEAD HEAD^1
 /understand scope pr 123
 ```
 
+- **changes**はHEADに対する未commit分です。stagedとunstagedが違う場合は`index`と`worktree`を別の固定根拠として保持し、削除はbaseの内容、非ignoreの未追跡sourceはworktreeの内容を収集します。除外対象やsymlinkは読みません。`reference PATH index`で収集済みのstaged内容を参照できます。index・worktree・HEADは変更しません。
+- **branch**はローカルbranchのtipを固定します。比較元を指定しなければbranch全体の内容、指定すればmerge-baseからの変更が対象です。tipや比較元の移動は`check`で検出し、`refresh`で明示更新します。
 - **repository / module**はtracked worktreeから内容をコピーして保持します。module pathはrepository-relativeです。未追跡ファイル・除外ファイルは収集しません。Git HEAD、内容digest、repository rootとcommon git directoryのidentityでscopeを識別します。会話中に編集されても過去の根拠を書き換えません。
 - **commit**は指定commitと、明示した直近の親を比較します。merge commitは`HEAD^1`・`HEAD^2`などで親を選びます。親のないroot commitは現versionでは対象外です。
 - **PR**はそのrepositoryで`gh pr view NUMBER --json baseRefOid,headRefOid,url`を実行します。GitHubのbase/head OIDとmerge-baseを固定し、merge-baseからheadを比較します。必要なobjectがなければ検証したGitHub URLとOIDを`git fetch --no-tags --no-write-fetch-head`で取得します。HEAD・branch・index・worktreeをcheckout変更しません。ただしGit object databaseには追加します。取得の認証は既存Git/ghに委ねます。
@@ -87,8 +99,8 @@ worktreeは`check`と通常agentのsettled時に内容fingerprintを比較して
 - モデルに送る番号付きコードは約45KBまで。最大150 pathのlistingは「未分析」と明記します。
 - `.env*`、認証・設定・秘密鍵に典型的なpath、生成物、binaryなどを除外し、symlinkやrepository外へのpathを拒否します。これはsecret scannerではありません。通常のsourceに埋め込まれた秘密は判定できません。送信前にrepositoryの内容を確認してください。
 - worktree captureの前後が変わった場合は失敗して手動retryを求めます。ファイルシステムのatomic snapshotではありません。
-- worktreeの未収集fileを後から昔の状態として読むことはできません。手動refreshまたは小さいmodule scopeにしてください。
-- commit/PRの追加referenceは固定base/headからのみ取得します。モデルに送るのは検証した固定sourceだけです。保存scopeの内容がGit replaceで別物にならないようGit replaceを無効化します。
+- worktree / indexの未収集fileを後から昔の状態として読むことはできません。手動refreshまたは小さいmodule scopeにしてください。
+- commit/PR/branchの追加referenceは固定base/headからのみ取得します。モデルに送るのは検証した固定sourceだけです。保存scopeの内容がGit replaceで別物にならないようGit replaceを無効化します。
 - exact引用は機械検証しますが、説明の意味やテストの十分性を機械保証するものではありません。modelの未検証回答・構造違反・範囲外引用はnoticeとし、マップには採用しません。
 
 ## 実装との受渡し
@@ -126,10 +138,11 @@ python3 tests/native-qa.py
 node tests/render-captures.mjs
 PI_UNDERSTANDING_TUI_MODE=regular python3 tests/native-qa.py
 node tests/render-captures.mjs regular
+python3 tests/screenshots.py  # Firefoxの隔離profileで両modeのPNGを作り、summaryへ列挙
 ```
 
 `native-qa.py`のbinary既定値は開発時のNix Pi 1.0.4です。他のbinaryでは`PI_UNDERSTANDING_BINARY=/path/to/pi`を指定します。専用config directoryとfixture repositoryを`.evidence/native-qa`に作り、個人のauth/settingsを開かず、明示ロードしたdeterministic providerだけを使います。実際の有料推論やnetwork inferenceは行いません。QA providerはpackage manifestに含めません。
 
-検証は本番のscope、runner、pane、extensionを使います。scope isolation、引用のexact一致、path traversal、symlink、HTML escape、active branch restore、会話分離、native failure/usage/cancellation、publication/handoffをテストします。実Pi RPCでnode_modulesのないraw sourceのloaderを確認し、PTYのfullscreen/regular両方で背景入力、日本語paste/cursor marker、根拠付きマップ、通常chat、狭幅fallback、resize、cancel、failure、reloadを確認します。
+検証は本番のscope、runner、pane、extensionを使います。未commit分のindex/worktree/削除/未追跡source、branchの固定・移動、AI選択の確認境界、scope isolation、引用のexact一致、path traversal、symlink、HTML escape、active branch restore、会話分離、native failure/usage/cancellation、publication/handoffをテストします。実Pi RPCでnode_modulesのないraw sourceのloaderを確認し、PTYのfullscreen/regular両方で背景入力、日本語paste/cursor marker、根拠付きマップ、通常chat、狭幅fallback、resize、cancel、failure、reloadを確認します。
 
 `.evidence/native-qa`にANSI stream、RPC記録、viewport別text/HTML、render-checks、source hashが残ります。`render-captures.mjs`のHTMLはANSIをxtermへreplayしたterminal gridです。Firefoxのheadless screenshotなどでPNGにできます。物理IMEのcandidate popup位置・macOS実機・実GitHub PR fetch・有料native GPT response品質はこのdeterministic QAだけでは確認できません。release受入れには独立reviewとホスト側Nix eval/buildを別途行います。
