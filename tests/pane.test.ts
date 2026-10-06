@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { initTheme, theme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
-import { CURSOR_MARKER, visibleWidth, type OverlayHandle, type TUI } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, visibleWidth, type OverlayHandle, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { UnderstandingPane, terminalText } from "../src/pane.ts";
 import { freshLearning } from "../src/learning.ts";
 import type { Scope } from "../src/scope.ts";
@@ -29,6 +29,23 @@ test("production pane bounds widths/heights, propagates IME focus, accepts Japan
   pane.handleInput("\x1b"); assert.equal(pane.focused, false); assert.equal(pane.options().visible!(80, 24), false);
   pane.focus(); assert.equal(pane.options().visible!(80, 24), true);
   pane.handleInput("\x04"); assert.equal(closed, true); assert.ok(rendered > 0);
+});
+
+test("geometry remount retains the native draft cursor and shortcut releases; only completed primary clicks request focus", () => {
+  initTheme("dark", false);
+  const tui = { terminal: { columns: 80, rows: 24 }, requestRender: () => {} } as unknown as TUI;
+  const actions = { ask: () => {}, cancel: () => {}, close: () => {}, running: () => false };
+  const original = new UnderstandingPane(tui, theme, () => undefined, actions, true);
+  original.handleInput("abcd"); original.handleInput("\x1b[D"); original.handleInput("\x1b[D");
+  const remounted = new UnderstandingPane(tui, theme, () => undefined, actions, true, original.view());
+  remounted.handleInput("X"); assert.equal(remounted.view().input, "abXcd", "cursor was not reset to the start/end");
+  let released = false;
+  remounted.handle = { unfocus: () => { released = true; } } as unknown as OverlayHandle;
+  remounted.handleInput("\x1b[117;7u"); assert.equal(released, true); assert.equal(remounted.view().input, "abXcd");
+  const mouse = { type: "click", button: "left" } as TuiMouseEvent;
+  assert.deepEqual(remounted.handleMouse(mouse), { handled: true, focus: true });
+  for (const type of ["press", "drag", "wheel"] as const) assert.equal(remounted.handleMouse({ ...mouse, type }), undefined);
+  assert.equal(remounted.handleMouse({ ...mouse, button: "right" }), undefined);
 });
 
 test("untrusted terminal control sequences are not emitted", () => {

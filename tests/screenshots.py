@@ -11,7 +11,7 @@ for name in ["native-qa", "native-qa-regular"]:
     screenshots = []
     with tempfile.TemporaryDirectory(prefix="pi-understanding-firefox-") as profile:
         for stage in json.loads((directory / "stages.json").read_text()):
-            if stage["name"] not in SELECTED:
+            if stage["name"] not in SELECTED and not stage["name"].startswith(("shortcut-", "command-focus-", "wide-first-", "click-focus-")):
                 continue
             output = directory / (stage["name"] + ".png")
             subprocess.run(["firefox", "--headless", "--no-remote", "--profile", profile, "--window-size", f'{stage["cols"] * 10},{stage["rows"] * 20}', "--screenshot", str(output), (directory / (stage["name"] + ".html")).as_uri()], check=True, timeout=40, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

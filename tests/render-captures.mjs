@@ -34,8 +34,22 @@ for (const stage of stages) {
   checks.push({ stage: stage.name, scopeHeaderVisible: text.includes('snapshot'), scopeIdentity: text.match(/scope ([0-9a-f]{8})/)?.[1], confirmationVisible: text.includes('この固定範囲') && text.includes('snapshot') && !text.includes('理解 /'), draftVisible: text.includes('draft-to-preserve'), changesVisible: text.includes('未commit分 / HEAD'), mapVisible: text.includes('送信する') && text.includes('submit()'), japaneseInputVisible: text.includes('質問：責任'), mainInputVisible: text.includes('main-input-still-active'), mainChatVisible: text.includes('main-chat-probe'), abortedVisible: text.includes('aborted'), failureVisible: text.includes('deterministic native provider failure'), cursor: { x: buffer.cursorX, y: buffer.cursorY } });
 }
 const byName = name => checks.find(c => c.stage === name);
+const textAt = async name => readFile(new URL(`${name}.txt`, root), 'utf8');
+const focusChecks = [];
+for (const label of ['wide', 'narrow', 'large']) {
+  const learning = await textAt('shortcut-learner-' + label);
+  const main = await textAt('shortcut-main-' + label);
+  const preserved = await textAt('shortcut-preserved-' + label);
+  const ok = learning.includes('学習 > learner-draft-' + label) && main.includes('main-draft-' + label + '-tail') && preserved.includes('学習 > learner-draft-' + label + '-tail');
+  focusChecks.push({ label, ok });
+}
+if (process.argv[2] !== 'regular') focusChecks.push({ label: 'fullscreen-click', ok: (await textAt('click-focus-input-120x36')).includes('学習 > click-focus-probe') });
+focusChecks.push({ label: 'command-focus', ok: (await textAt('command-focus-input-120x36')).includes('学習 > command-focus-probe') });
+await writeFile(new URL('focus-render-checks.json', root), JSON.stringify(focusChecks, null, 2));
 const required = [
+  ...focusChecks.map(check => check.ok),
   byName('typical-background-120x36')?.scopeHeaderVisible,
+  (await readFile(new URL('wide-first-input-120x36.txt', root), 'utf8')).includes('学習 > wide-first-probe'),
   byName('grounded-map-120x36')?.mapVisible,
   byName('main-input-background-120x36')?.mainInputVisible,
   byName('japanese-focused-120x36')?.japaneseInputVisible,
@@ -51,6 +65,7 @@ const required = [
   byName('ai-target-confirm-visible-160x48')?.confirmationVisible,
   byName('ai-target-cancel-restored-160x48')?.scopeIdentity === byName('reload-restored-160x48')?.scopeIdentity,
   byName('ai-target-cancel-restored-160x48')?.changesVisible === false,
+  byName('ai-target-cancel-restored-160x48')?.draftVisible,
   byName('ai-target-accept-visible-160x48')?.confirmationVisible,
   byName('ai-target-changed-160x48')?.changesVisible,
 ];

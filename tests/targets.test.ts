@@ -64,7 +64,7 @@ test("AI-assisted target selection confirms frozen scope, never discloses learne
     const definitions = new Map<string, Parameters<ExtensionAPI["registerTool"]>[0]>();
     const events = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void>>();
     const entries: unknown[] = []; let approve = false; let confirmations = 0;
-    const api = { on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) => events.set(name, handler), registerCommand: () => {}, registerTool: (def: Parameters<ExtensionAPI["registerTool"]>[0]) => definitions.set(def.name, def), appendEntry: (_type: string, data: unknown) => entries.push(structuredClone(data)) } as unknown as ExtensionAPI;
+    const api = { on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) => events.set(name, handler), registerCommand: () => {}, registerShortcut: () => {}, registerTool: (def: Parameters<ExtensionAPI["registerTool"]>[0]) => definitions.set(def.name, def), appendEntry: (_type: string, data: unknown) => entries.push(structuredClone(data)) } as unknown as ExtensionAPI;
     understanding(api);
     const ctx = { cwd: f.root, hasUI: true, mode: "rpc", sessionManager: { getBranch: () => [] }, ui: { notify: () => {}, setStatus: () => {}, confirm: async (_title: string, text: string) => { confirmations++; assert.match(text, /snapshot/); return approve; } } } as unknown as ExtensionToolContext;
     await events.get("session_start")!({}, ctx);

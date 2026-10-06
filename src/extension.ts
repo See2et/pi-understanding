@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 import { collectScope, repositoryIdentity, fingerprint, pinnedFile, isWorktree, type ScopeRequest } from "./scope.ts";
 import { ENTRY, freshState, freshLearning, restore, LearningRunner, addReference, type State, type Learning, type Publication } from "./learning.ts";
-import { UnderstandingPane, terminalText, type PaneView } from "./pane.ts";
+import { UnderstandingPane, terminalText, FOCUS_SHORTCUT, FOCUS_HINT, type PaneView } from "./pane.ts";
 import { openDiagram } from "./diagram.ts";
 import { chooseTarget, targetMetadata } from "./targets.ts";
 
@@ -25,6 +25,7 @@ export const HELP = `理解ペインは通常チャットとは別のGPT会話�
 /understand handoff — 内容を編集・確認して実装チャットへ明示送信
 /understand diagram — 根拠付きマップのみHTML保存・表示
 /understand reset | forget — 会話消去 / 現在スコープを削除
+Ctrl+Alt+U: 通常入力と学習入力の切替（両方の下書きを保持）。fullscreenではペインをクリックして学習入力。
 学習入力: Ctrl+T 対象選択、Esc/Ctrl+G 通常入力、Ctrl+C 学習中止、Ctrl+D 閉じる、Ctrl+O 広表示、PgUp/PgDn 履歴。
 110列未満では背景ペインを隠します。focusで広表示。ペインは重ね表示で、通常チャットの幅は変えません。`;
 export function parseScope(args: string): ScopeRequest {
@@ -94,7 +95,7 @@ export default function understanding(pi: ExtensionAPI): void {
         l.stale = l.scope.fingerprint === "immutable" ? "current" : "unknown";
         if (l.pending) { l.pending = false; l.turns.push({ role: "notice", text: "前の学習呼出しは中断されています。再送は手動です。使用量は未確定です。", timestamp: Date.now() }); }
       }
-      context.ui.setStatus("understanding", state.active ? "理解: /understand open" : undefined);
+      context.ui.setStatus("understanding", `理解: ${FOCUS_HINT}`);
     } catch { state = freshState(""); }
   };
   pi.on("session_start", async (_event, context) => { await rebuild(context); });
@@ -137,6 +138,15 @@ export default function understanding(pi: ExtensionAPI): void {
     detachLearning(); state.repository = scope.repository; state.scopes[scope.id] ??= freshLearning(scope); state.active = scope.id; save(); redraw();
     return scope;
   }
+  pi.registerShortcut(FOCUS_SHORTCUT, {
+    description: "通常入力 ↔ 学習入力（下書き保持）",
+    handler: async context => {
+      ctx = context;
+      if (!current()) { notify("先に /understand scope で理解対象を選択してください。", "warning"); return; }
+      if (pane?.handle?.isFocused()) pane.release();
+      else open(context, true);
+    },
+  });
   pi.registerCommand("understand", {
     description: "固定スコープの独立学習 / scope・map・focus・refresh・handoff・diagram",
     handler: async (args, context) => {
@@ -155,7 +165,8 @@ export default function understanding(pi: ExtensionAPI): void {
             if (!await applyScope(request, context, true)) return;
           }
           if (command === "wide" && pane) { const view = pane.view(); close(); open(context, true, true, view); }
-          else open(context, command === "focus", command === "wide");
+          // Both focus commands must claim input on initial mount and on reuse.
+          else open(context, command === "focus" || command === "wide", command === "wide");
           return;
         }
         if (command === "scopes") {

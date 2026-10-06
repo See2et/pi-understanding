@@ -1,10 +1,13 @@
 import { getMarkdownTheme, type Theme } from "@earendil-works/pi-coding-agent";
-import { Input, Markdown, matchesKey, truncateToWidth, wrapTextWithAnsi, type Component, type Focusable, type OverlayHandle, type OverlayOptions, type TUI } from "@earendil-works/pi-tui";
+import { Input, Markdown, matchesKey, truncateToWidth, wrapTextWithAnsi, type Component, type Focusable, type OverlayHandle, type OverlayOptions, type TUI, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import type { Learning } from "./learning.ts";
 
 // Remove terminal control payloads from untrusted source/model output, including OSC links.
 export function terminalText(value: string): string { return value.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, ""); }
-export type PaneView = { input: string; offset: number; partial?: string; error: string };
+export const FOCUS_SHORTCUT = "ctrl+alt+u";
+export const FOCUS_HINT = "Ctrl+Alt+U 入力切替";
+// Keep the native editing buffer across geometry remounts, including cursor/undo/paste state.
+export type PaneView = { input: string; editor?: Input; offset: number; partial?: string; error: string };
 export class UnderstandingPane implements Component, Focusable {
   focused = false;
   handle?: OverlayHandle;
@@ -23,7 +26,11 @@ export class UnderstandingPane implements Component, Focusable {
   private actions: { ask: (text: string) => void; cancel: () => void; close: () => void; running: () => boolean; choose?: () => void; layout?: (wide: boolean, focus: boolean) => void };
   constructor(tui: TUI, theme: Theme, current: () => Learning | undefined, actions: { ask: (text: string) => void; cancel: () => void; close: () => void; running: () => boolean; choose?: () => void; layout?: (wide: boolean, focus: boolean) => void }, wide = false, view?: PaneView) {
     this.tui = tui; this.theme = theme; this.current = current; this.actions = actions; this.wide = wide;
-    if (view) { this.input.setValue(view.input); this.offset = view.offset; this.partial = view.partial; this.error = view.error; }
+    if (view) {
+      if (view.editor) this.input = view.editor;
+      else { this.input.setValue(view.input); this.input.handleInput("\x05"); }
+      this.offset = view.offset; this.partial = view.partial; this.error = view.error;
+    }
     this.input.onSubmit = value => { if (!value.trim()) return; this.actions.ask(value.trim()); this.input.setValue(""); this.offset = 0; this.redraw(); };
   }
   options(): OverlayOptions {
@@ -40,7 +47,7 @@ export class UnderstandingPane implements Component, Focusable {
     if (this.tui.terminal.columns < 110) this.wide = true;
     this.handle?.setHidden(false); this.handle?.focus(); this.redraw(this.partial);
   }
-  view(): PaneView { return { input: this.input.getValue(), offset: this.offset, partial: this.partial, error: this.error }; }
+  view(): PaneView { return { input: this.input.getValue(), editor: this.input, offset: this.offset, partial: this.partial, error: this.error }; }
   release(): void {
     this.handle?.unfocus();
     if (this.wide && this.actions.layout) { this.actions.layout(false, false); return; }
@@ -48,8 +55,15 @@ export class UnderstandingPane implements Component, Focusable {
   }
   redraw(partial?: string): void { this.partial = partial; this.invalidate(); this.tui.requestRender(); }
   invalidate(): void { this.cachedKey = ""; this.input.invalidate(); }
+  handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+    // Fullscreen Pi dispatches this natively; regular mode keeps terminal scrollback/mouse.
+    // Only a primary click requests focus. Wheel/right-click/drag fallback stays with Pi.
+    if (event.button === "left" && event.type === "click") return { handled: true, focus: true };
+    return undefined;
+  }
   handleInput(data: string): void {
-    if (matchesKey(data, "escape") || matchesKey(data, "ctrl+g")) this.release();
+    // Extension shortcuts belong to the main editor, not focused custom overlays.
+    if (matchesKey(data, FOCUS_SHORTCUT) || matchesKey(data, "escape") || matchesKey(data, "ctrl+g")) this.release();
     else if (matchesKey(data, "ctrl+t")) this.actions.choose?.();
     else if (matchesKey(data, "ctrl+c")) { this.actions.cancel(); this.redraw(this.partial); }
     else if (matchesKey(data, "ctrl+d")) this.actions.close();
@@ -94,7 +108,7 @@ export class UnderstandingPane implements Component, Focusable {
     const body = this.cached.slice(Math.max(0, end - this.bodyHeight), end);
     while (body.length < this.bodyHeight) body.push("");
     this.input.focused = this.focused;
-    const footer = th.fg("muted", this.actions.running() ? "Ctrl+C 学習中止 / Esc 通常入力 / PgUp 履歴" : "Ctrl+T 対象 / Esc 通常入力 / PgUp 履歴");
+    const footer = th.fg("muted", `${FOCUS_HINT} / Esc 通常 / ${this.actions.running() ? "Ctrl+C 中止" : "Ctrl+T 対象"}`);
     return [border, ...header.map(row), row(th.fg("border", "─".repeat(inner))), ...body.map(row), row(footer), ...this.input.render(inner).map(row), th.fg("border", `╰${"─".repeat(inner)}╯`)];
   }
 }

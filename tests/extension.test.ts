@@ -42,6 +42,7 @@ test("publication tool cannot read learner dialogue; one optional question per m
     const events = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void>>();
     const sent: string[] = [];
     const api = {
+      registerShortcut: () => {},
       registerCommand: (_name: string, options: typeof command) => { command = options; },
       registerTool: (definition: typeof tool) => { tool = definition; },
       on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) => { events.set(event, handler); },

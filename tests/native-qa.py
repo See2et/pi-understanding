@@ -95,6 +95,16 @@ def drain(seconds=.4):
             raw.extend(block)
 def send(text): os.write(master, text.encode()); drain(.4)
 def command(text): send(text + '\r')
+SHORTCUT = '\x1b[117;7u'  # native CSI-u Ctrl+Alt+U, no terminal mouse enabling
+learner_probes = ['wide-first-probe', 'command-focus-probe', 'learner-draft-wide-tail', 'learner-draft-narrow-tail', 'learner-draft-large-tail']
+main_probes = ['main-draft-wide-tail', 'main-draft-narrow-tail', 'main-draft-large-tail']
+def focus_roundtrip(label, cols, rows):
+    send('main-draft-' + label)
+    send(SHORTCUT); send('learner-draft-' + label); capture('shortcut-learner-' + label, cols, rows)
+    send(SHORTCUT); send('-tail'); capture('shortcut-main-' + label, cols, rows)
+    send(SHORTCUT); send('-tail'); capture('shortcut-preserved-' + label, cols, rows)
+    send('\r'); drain(3); send(SHORTCUT); send('\r'); drain(1)
+    capture('shortcut-submitted-' + label, cols, rows)
 def capture(name, cols, rows):
     drain(.3); stages.append({'name': name, 'cols': cols, 'rows': rows, 'end': len(raw)})
 def resize(cols, rows):
@@ -103,18 +113,30 @@ drain(1.5)
 command('/understand scope changes'); capture('uncommitted-background-120x36', 120, 36)
 command(f'/understand scope branch feature {BRANCH}'); capture('branch-comparison-120x36', 120, 36)
 command('/understand scope repository'); capture('typical-background-120x36', 120, 36)
-command('/understand map'); drain(3); command('/understand focus'); send('\x1b[5~'); capture('grounded-map-120x36', 120, 36); send('\x1b')
+# New wide interaction must take actual text ownership, just like an existing pane.
+command('/understand close'); command('/understand focus'); send('command-focus-probe'); capture('command-focus-input-120x36', 120, 36)
+send('\r'); drain(3); send('\x07')
+command('/understand close'); command('/understand wide'); send('wide-first-probe'); capture('wide-first-input-120x36', 120, 36)
+send('\r'); drain(3); send('\x1b')
+command('/understand map'); drain(3); command('/understand focus'); send('\x1b[5~' * 10); capture('grounded-map-120x36', 120, 36); send('\x1b')
 # Background pane must not own ordinary input.
 send('main-input-still-active'); capture('main-input-background-120x36', 120, 36)
-send('\x15'); command('/understand focus')
+send('\x15'); focus_roundtrip('wide', 120, 36)
+if MODE == 'fullscreen':
+    # Primary click at (90, 3) lies inside the right-side native overlay.
+    send('\x1b[<0;90;3M\x1b[<0;90;3m'); send('click-focus-probe'); capture('click-focus-input-120x36', 120, 36)
+    send('\r'); drain(3); send(SHORTCUT); learner_probes.append('click-focus-probe')
+command('/understand focus')
 send('\x1b[200~質問：責任を説明してください\x1b[201~'); capture('japanese-focused-120x36', 120, 36)
 send('\r'); drain(3); capture('learning-dialogue-120x36', 120, 36)
 send('\x1b'); command('main-chat-probe'); drain(.8); capture('main-chat-operational-120x36', 120, 36)
 command('/understand focus'); send('WAIT_CANCEL\r'); drain(.2); send('\x03'); drain(2); capture('cancelled-learning-120x36', 120, 36)
 send('\x1b'); resize(80, 24); capture('narrow-background-hidden-80x24', 80, 24)
+focus_roundtrip('narrow', 80, 24)
 command('/understand focus'); capture('narrow-focus-fallback-80x24', 80, 24)
 resize(160, 48); capture('wide-focused-160x48', 160, 48)
-send('\x1b'); command('/understand ask FAIL_NATIVE'); drain(3); capture('native-failure-cleanup-160x48', 160, 48)
+send('\x1b'); focus_roundtrip('large', 160, 48)
+command('/understand ask FAIL_NATIVE'); drain(3); capture('native-failure-cleanup-160x48', 160, 48)
 command('/reload'); drain(1); command('/understand open'); capture('reload-restored-160x48', 160, 48)
 # The implementation agent proposes a target while the learner is in wide view.
 command('/understand close')
@@ -128,6 +150,20 @@ send('\x1b'); command('/qa-exit'); drain(.7)
 try: process.wait(timeout=5)
 except subprocess.TimeoutExpired: process.terminate(); process.wait(timeout=5); raise RuntimeError('PTY orderly shutdown timed out')
 os.close(master)
+# Check the session's persisted user ownership, not just a focus label/render mock.
+pty_sessions = []
+for path in (OUT / 'config' / 'sessions').rglob('*.jsonl'):
+    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    if any(row.get('id') == 'understanding-pty-qa' for row in rows): pty_sessions = rows; break
+assert pty_sessions, 'PTY session not found'
+learning_states = [row['data'] for row in pty_sessions if row.get('customType') == 'see2et.pi-understanding.v1']
+learner_users = {turn['text'] for state in learning_states for learning in state['scopes'].values() for turn in learning['turns'] if turn['role'] == 'user'}
+main_users = {msg['content'][0]['text'] if isinstance(msg['content'], list) else msg['content'] for row in pty_sessions if row.get('type') == 'message' and (msg := row['message']).get('role') == 'user'}
+for probe in learner_probes:
+    assert probe in learner_users and probe not in main_users, ('learner routing', probe, learner_users, main_users)
+for probe in main_probes:
+    assert probe in main_users and probe not in learner_users, ('main routing', probe, learner_users, main_users)
+(OUT / 'focus-routing.json').write_text(json.dumps({'learner_probes': learner_probes, 'main_probes': main_probes, 'learner_users': sorted(learner_users), 'main_users': sorted(main_users)}, ensure_ascii=False, indent=2))
 (OUT / 'pty.ansi').write_bytes(raw)
 (OUT / 'stages.json').write_text(json.dumps(stages, ensure_ascii=False, indent=2))
 source_hash = hashlib.sha256(b''.join(p.read_bytes() for p in sorted((ROOT / 'src').glob('*.ts')))).hexdigest()
