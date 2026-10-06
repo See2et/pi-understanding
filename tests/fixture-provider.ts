@@ -10,6 +10,7 @@ export default function fixture(pi: ExtensionAPI): void {
       const all = JSON.stringify(context.messages);
       const learning = all.includes("Pinned scope");
       const latest = JSON.stringify(context.messages.at(-1));
+      const targetProposal = !learning && latest.includes("QA_TARGET_DELAY");
       const fail = latest.includes("FAIL_NATIVE");
       const waiting = latest.includes("WAIT_CANCEL");
       const sourceText = context.messages.filter(m => m.role === "user").map(m => typeof m.content === "string" ? m.content : JSON.stringify(m.content)).join("\n");
@@ -18,6 +19,11 @@ export default function fixture(pi: ExtensionAPI): void {
       const reply = learning ? JSON.stringify({ reply: "日本語の学習回答です。通常の実装チャットとは独立しています。\n\n## 責任と失敗\n固定した根拠だけを確認しました。省略したファイルは未確認です。\n\n- 入力 → 検証 → 結果\n- テストの存在は追加参照で確認できます。", map }) : "main-chat-probe: 通常の実装チャットは動作しています。";
       const msg: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider, model: model.id, content: [{ type: "text", text: reply }], stopReason: "stop", timestamp: Date.now(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
       void (async () => {
+        if (targetProposal) {
+          await new Promise(r => setTimeout(r, 2500));
+          const proposal: AssistantMessage = { ...msg, content: [{ type: "toolCall", id: "qa-target-call", name: "select_understanding_scope", arguments: { specification: "changes", reason: "QA: 未commit分を確認してください" } }], stopReason: "toolUse" };
+          stream.push({ type: "done", reason: "toolUse", message: proposal }); stream.end(proposal); return;
+        }
         if (waiting) await new Promise(r => setTimeout(r, 1800));
         stream.push({ type: "start", partial: { ...msg, content: [], stopReason: "pending" } });
         for (let i = 0; i < reply.length; i += 8) {

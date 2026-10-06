@@ -31,7 +31,7 @@ for (const stage of stages) {
   const cursor = `<div class="cursor" style="left:${buffer.cursorX * 10}px;top:${buffer.cursorY * 20}px"></div>`;
   await writeFile(new URL(`${stage.name}.txt`, root), text);
   await writeFile(new URL(`${stage.name}.html`, root), `<!doctype html><meta charset="utf-8"><title>${escape(stage.name)}</title><style>body{margin:0;background:#101318;color:#e4e7eb}.terminal{position:relative;width:${stage.cols * 10}px;height:${stage.rows * 20}px;font:16px/20px "Noto Sans Mono CJK JP","DejaVu Sans Mono",monospace}.row{height:20px;white-space:pre}.row span{display:inline-block;vertical-align:top}.cursor{position:absolute;height:18px;width:9px;border-bottom:2px solid #e4e7eb;pointer-events:none}</style><main class="terminal">${html}${cursor}</main>`);
-  checks.push({ stage: stage.name, scopeHeaderVisible: text.includes('snapshot'), mapVisible: text.includes('送信する') && text.includes('submit()'), japaneseInputVisible: text.includes('質問：責任'), mainInputVisible: text.includes('main-input-still-active'), mainChatVisible: text.includes('main-chat-probe'), abortedVisible: text.includes('aborted'), failureVisible: text.includes('deterministic native provider failure'), cursor: { x: buffer.cursorX, y: buffer.cursorY } });
+  checks.push({ stage: stage.name, scopeHeaderVisible: text.includes('snapshot'), scopeIdentity: text.match(/scope ([0-9a-f]{8})/)?.[1], confirmationVisible: text.includes('この固定範囲') && text.includes('snapshot') && !text.includes('理解 /'), draftVisible: text.includes('draft-to-preserve'), changesVisible: text.includes('未commit分 / HEAD'), mapVisible: text.includes('送信する') && text.includes('submit()'), japaneseInputVisible: text.includes('質問：責任'), mainInputVisible: text.includes('main-input-still-active'), mainChatVisible: text.includes('main-chat-probe'), abortedVisible: text.includes('aborted'), failureVisible: text.includes('deterministic native provider failure'), cursor: { x: buffer.cursorX, y: buffer.cursorY } });
 }
 const byName = name => checks.find(c => c.stage === name);
 const required = [
@@ -48,6 +48,11 @@ const required = [
   byName('wide-focused-160x48')?.scopeHeaderVisible,
   byName('native-failure-cleanup-160x48')?.failureVisible,
   byName('reload-restored-160x48')?.failureVisible,
+  byName('ai-target-confirm-visible-160x48')?.confirmationVisible,
+  byName('ai-target-cancel-restored-160x48')?.scopeIdentity === byName('reload-restored-160x48')?.scopeIdentity,
+  byName('ai-target-cancel-restored-160x48')?.changesVisible === false,
+  byName('ai-target-accept-visible-160x48')?.confirmationVisible,
+  byName('ai-target-changed-160x48')?.changesVisible,
 ];
 if (!required.every(Boolean)) throw new Error(`Rendered interaction assertion failed: ${JSON.stringify(required)}`);
 await writeFile(new URL('render-checks.json', root), JSON.stringify(checks, null, 2));

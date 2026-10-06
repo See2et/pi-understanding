@@ -26,7 +26,7 @@ git('add', '.'); git('commit', '-qm', 'fixture base'); BASE = git('rev-parse', '
 (WORK / 'src/main.ts').write_text('export function submit() { return "verified"; }\n')
 git('add', '.'); git('commit', '-qm', 'fixture head'); HEAD = git('rev-parse', 'HEAD')
 ENV = {**os.environ, 'PI_CODING_AGENT_DIR': str(OUT / 'config'), 'PI_OFFLINE': '1', 'PI_TELEMETRY': '0', 'TERM': 'xterm-256color', 'COLORTERM': 'truecolor'}
-ARGS = [PI, '--offline', '--no-approve', '--no-extensions', '--no-mcp', '--no-skills', '--no-prompt-templates', '--no-themes', '--no-context-files', '--no-tools', '-e', str(RAW), '-e', str(ROOT / 'tests/fixture-provider.ts'), '--model', 'understanding-qa/gpt-qa', '--thinking', 'off']
+ARGS = [PI, '--offline', '--no-approve', '--no-extensions', '--no-mcp', '--no-skills', '--no-prompt-templates', '--no-themes', '--no-context-files', '--tools', 'select_understanding_scope', '-e', str(RAW), '-e', str(ROOT / 'tests/fixture-provider.ts'), '--model', 'understanding-qa/gpt-qa', '--thinking', 'off']
 proc = subprocess.Popen([*ARGS, '--mode', 'rpc'], cwd=WORK, env=ENV, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
 assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
 records = []
@@ -116,7 +116,15 @@ command('/understand focus'); capture('narrow-focus-fallback-80x24', 80, 24)
 resize(160, 48); capture('wide-focused-160x48', 160, 48)
 send('\x1b'); command('/understand ask FAIL_NATIVE'); drain(3); capture('native-failure-cleanup-160x48', 160, 48)
 command('/reload'); drain(1); command('/understand open'); capture('reload-restored-160x48', 160, 48)
-command('/qa-exit'); drain(.7)
+# The implementation agent proposes a target while the learner is in wide view.
+command('/understand close')
+command('QA_TARGET_DELAY'); command('/understand wide'); send('draft-to-preserve'); drain(3)
+capture('ai-target-confirm-visible-160x48', 160, 48)
+send('\x1b'); drain(.8); capture('ai-target-cancel-restored-160x48', 160, 48)
+send('\x1b'); command('QA_TARGET_DELAY'); command('/understand wide'); drain(3)
+capture('ai-target-accept-visible-160x48', 160, 48)
+send('\r'); drain(1); capture('ai-target-changed-160x48', 160, 48)
+send('\x1b'); command('/qa-exit'); drain(.7)
 try: process.wait(timeout=5)
 except subprocess.TimeoutExpired: process.terminate(); process.wait(timeout=5); raise RuntimeError('PTY orderly shutdown timed out')
 os.close(master)

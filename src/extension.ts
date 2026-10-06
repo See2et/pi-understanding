@@ -115,7 +115,23 @@ export default function understanding(pi: ExtensionAPI): void {
     if (confirm && !context.hasUI) throw new Error("対象の変更にはユーザーの確認UIが必要です。");
     const scope = await collectScope(context.cwd, request);
     if (ticket !== generation) return undefined;
-    if (confirm && !await context.ui.confirm("この固定範囲を理解対象にしますか？", `${reason ? `理由: ${reason}\n` : ""}${JSON.stringify(request)}\n${scope.root}\nbase ${scope.base}\nhead ${scope.head}\nsnapshot ${scope.snapshot}\n収集${scope.sources.length} / 未収集${scope.omitted}`)) return undefined;
+    if (confirm) {
+      // Pi dialogs live in the ordinary editor container, below custom overlays.
+      const suspended = pane;
+      const hidden = suspended?.handle?.isHidden() ?? false;
+      const focused = suspended?.focused ?? false;
+      suspended?.handle?.setHidden(true);
+      let approved = false;
+      try {
+        approved = await context.ui.confirm("この固定範囲を理解対象にしますか？", `${reason ? `理由: ${reason}\n` : ""}${JSON.stringify(request)}\n${scope.root}\nbase ${scope.base}\nhead ${scope.head}\nsnapshot ${scope.snapshot}\n収集${scope.sources.length} / 未収集${scope.omitted}`);
+      } finally {
+        if (ticket === generation && pane === suspended && suspended) {
+          suspended.handle?.setHidden(hidden);
+          if (focused && !hidden) suspended.focus();
+        }
+      }
+      if (!approved) return undefined;
+    }
     if (ticket !== generation) return undefined;
     if (!state.scopes[scope.id] && Object.keys(state.scopes).length >= 6) throw new Error("保存スコープは6件までです。/understand forget で削除してください。");
     detachLearning(); state.repository = scope.repository; state.scopes[scope.id] ??= freshLearning(scope); state.active = scope.id; save(); redraw();

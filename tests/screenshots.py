@@ -5,7 +5,7 @@ import pathlib
 import subprocess
 import tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-SELECTED = {"typical-background-120x36", "uncommitted-background-120x36", "branch-comparison-120x36", "grounded-map-120x36", "japanese-focused-120x36", "narrow-focus-fallback-80x24", "wide-focused-160x48", "native-failure-cleanup-160x48"}
+SELECTED = {"typical-background-120x36", "uncommitted-background-120x36", "branch-comparison-120x36", "grounded-map-120x36", "japanese-focused-120x36", "narrow-focus-fallback-80x24", "wide-focused-160x48", "native-failure-cleanup-160x48", "ai-target-confirm-visible-160x48", "ai-target-cancel-restored-160x48", "ai-target-changed-160x48"}
 for name in ["native-qa", "native-qa-regular"]:
     directory = ROOT / ".evidence" / name
     screenshots = []
