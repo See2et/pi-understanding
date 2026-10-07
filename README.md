@@ -1,6 +1,6 @@
 # pi-understanding
 
-コードを書いているPiとは別に、固定したコードの責任・重要な関数・契約・テストを理解するための会話を開きます。学習ペインは右側への重ね表示です。通常チャットの幅を変更するsplit viewではありません。
+コードを書いているPiとは別に、固定したコードの責任・重要な関数・契約・テストを理解するための会話を開きます。学習中は横幅・高さ96%のUnderstanding Overlayを表示し、入力も学習側に切り替えます。通常入力へ戻るとOverlayを隠します。通常チャットの幅を変更するsplit viewではありません。
 
 学習AIにはコード変更用のツールも、通常チャットの履歴も渡しません。学習会話を実装AIへ自動送信することもありません。ただし、Pi extensionはPiと同じOS権限で動きます。この設計はOS sandboxではなく、拡張内の読取・会話分離の契約です。信頼できるソースだけを読み込んでください。
 
@@ -33,23 +33,19 @@ Nix側のrevision更新はルートflake.lockで行います。Piの認証・設
 
 1. 理解対象を一覧から選びます。まずは「未commit分」が便利です。branch、最近のcommit、open PRも名前・件名で選べるので、REFやPR番号を覚える必要はありません。`/understand`だけなら初回は選択画面を開きます。
 2. `map`で利用者フローから責任、重要な関数、契約、テストへの小さいマップを作ります。各項目の根拠は固定ref・path・行番号・正確な引用で検証します。全関数の自動graphではありません。
-3. `focus`で学習ペインに入力します。日本語入力はPiのInputとcursor markerを使います。Enterで送信します。
+3. `dive 1`でM1の詳細と正確な根拠引用を読み、`overview`またはCtrl+Oで全体図へ戻ります。移動では推論もscope更新もしません。`open`・`focus`・`wide`はいずれも同じ学習表示の互換aliasです。日本語入力はPiのInputとcursor markerを使います。Enterで送信します。
 4. Ctrl+Alt+Uで通常入力と学習入力を行き来できます。どちらの未送信の下書きも保持します。EscまたはCtrl+Gでも通常チャットに戻れます。学習AIが回答中でも実装チャットは動作します。
 
-`/understand`・`open`は入力を奪わない背景表示です。入力先を変えるには`/understand focus`、`wide`、またはCtrl+Alt+Uを使ってください。Ctrl+Alt+UはPiの`/hotkeys`、ステータスとペイン下部にも表示します。対象未選択時は`/understand scope`を案内し、下書きを消したり勝手に対象を選んだりしません。
+Ctrl+Alt+UはPiの`/hotkeys`、ステータスとペイン下部にも表示します。対象未選択時は`/understand scope`を案内し、下書きを消したり勝手に対象を選んだりしません。fullscreen・regularのどちらでも、Ctrl+Alt+Uで「表示して学習入力」と「隠して通常入力」を切り替えます。Esc・Ctrl+G・Ctrl+D・`close`も隠す操作です。次に開いたとき、学習側の未送信draftと通常editorのdraftはそのまま残ります。旧sidebar・background・wideの区別と、露出したeditorへのclick切替は廃止しました。独自renderer、mouse tracking、通常editorの置換やmouse handlerのwrapperは使いません。
 
-fullscreenでは学習ペイン内の左クリックで学習入力へ、ペインに隠れていない通常入力欄の左クリックで通常入力へ戻れます。両方の下書きを保持し、通常入力に戻るとペインは背景表示になります。狭幅では背景ペインを隠すため、学習へ戻るにはCtrl+Alt+Uを使います。Piのnative mouse APIだけを使い、regular modeではmouse trackingを有効にしません。regular modeでも同じCtrl+Alt+U・Esc・Ctrl+Gが使えます。
-
-Pi 1.0.4は通常editorへのクリック後もoverlayの入力復帰予約を保持します。このversionへの互換処理として、ペイン表示中だけ既存editorの`handleMouse`を包み、完了した左クリックが入力focusを要求した場合にoverlay handleを明示的に`unfocus({ target: editor })`します。通常editorの元の結果とcursor操作はそのままPiへ返します。close・reload・geometry再mount時にwrapperを解除し、独自editorやrendererは作りません。
+全体図には同じマップ内で固定したM1…M12の番号、利用者フローの段階、段階に属する理由、重要性の理由を表示します。上部のcompact minimapは会話をスクロールしても残り、選択中の番号に▶を付けます。深掘り後の質問には、選択点の番号・役割・契約と固定根拠の参照を学習AIへ渡します。「ここが失敗すると？」の「ここ」はその選択点を指します。選択点の収集済みsourceを優先して送りますが、送信上限で根拠が欠けた場合は未送信と明記し、live codeは読みません。理由はAIの意味の解釈で、機械検証する正確なsource引用とは別です。旧保存マップでstage/reasonがない場合は「未指定」「未記録」と表示します。マップの置換は明示`map`だけで、普通の質問にAIがmapを返しても置換しません。明示置換後は選択を解除して全体へ戻します。
 
 ### 操作
 
 | コマンド | 動作 |
 | --- | --- |
-| `/understand open` | 入力を奪わず背景表示 |
-| `/understand toggle` / `close` | 一時的に表示切替 / 閉じる |
-| `/understand focus` | 学習側に入力先を切替 |
-| `/understand wide` | 広表示に切替して学習側に入力 |
+| `/understand open` / `focus` / `wide` | ほぼ全画面の学習表示・入力（互換alias） |
+| `/understand toggle` / `close` | 表示と入力を切替 / draftを保持して隠す |
 | `/understand scope` | 未commit分・ローカルbranch・最近のcommit・PRなどを一覧から選択し、固定範囲を確認 |
 | `/understand scope changes` | HEADとindex・worktreeの未commit分を固定 |
 | `/understand scope branch REF [BASE]` | branch全体、またはBASEとのmerge-base以降の変更を固定 |
@@ -57,14 +53,18 @@ Pi 1.0.4は通常editorへのクリック後もoverlayの入力復帰予約を�
 | `/understand scopes` | 現在のsession branchに保存されたscopeを選択 |
 | `/understand focus src/handler.ts:submit` | 学習の焦点だけを変更。scopeは変えない |
 | `/understand ask ここで失敗した場合は？` | 独立した学習会話へ質問 |
-| `/understand map` | 根拠付きマップを生成 |
-| `/understand reference src/handler.ts head` | 固定コードを行番号付きで学習側へ表示 |
-| `/understand reference src/handler.ts base` | 比較元の固定コードを表示 |
+| `/understand map` | 概要・段階・理由・根拠付きマップを明示生成（唯一の置換操作） |
+| `/understand dive 1` / `overview` | M1の詳細 / 全体図へ。学習入力でも`dive 1`・`overview`を送信できる |
+| `/understand reference` | dive選択点の最初の固定根拠を行番号付きsnippetで表示 |
+| `/understand reference src/handler.ts head` | 選択根拠に一致する範囲、なければ先頭40行。base・indexも指定可 |
+| `/understand reference src/handler.ts head 10-30` / `all` | 明示行範囲 / ファイル全体。live worktreeは読まない |
 | `/understand check` | 明示的に鮮度を確認 |
 | `/understand refresh` | 同じ種類のscopeを現在の情報から取り直す |
 | `/understand questions on` / `off` | milestoneでの任意の理解確認。新しいscopeではon。保存済み設定は保持 |
 | `/understand handoff` | 送る内容を編集し、確認してから通常チャットへfollow-up送信 |
-| `/understand diagram` | マップと根拠だけの静的HTML/SVGを保存し、ブラウザで開く |
+| `/understand diagram` | 同じM番号・段階・理由・引用の静的HTML/SVGを保存し、local browserで開く |
+| `/understand diagram preview` | 明示的に既存home-preview経由でtailnet HTTPS URLを取得 |
+| `/understand diagram stop` | このextensionが所有するpreview登録とserverだけを停止 |
 | `/understand reset` | 確認後に現在scopeの会話・マップを消去。固定根拠は保持 |
 | `/understand forget` | 確認後に現在scopeを削除 |
 | `/understand help` | 操作一覧 |
@@ -73,9 +73,7 @@ Pi 1.0.4は通常editorへのクリック後もoverlayの入力復帰予約を�
 
 実装側のAIには「今の未commit分を理解したい」「どのcommitか覚えていないので候補を調べて」と相談できます。`understanding_targets`で現在branch・変更ファイル・ローカルbranch・最近のcommitの候補を調べ、必要ならユーザーに質問します。PR一覧はユーザーが求めた場合だけ取得します。`select_understanding_scope`で提案を受けても、固定した対象・base/head・snapshotを確認してから選択します。学習会話はこれらのtoolに渡しません。対象の確認中は、既存の学習Overlayを一時的に隠して確認内容を読めるようにします。拒否・キャンセルでは理解対象を変更しません。
 
-ペイン内ではCtrl+Cが学習呼出しだけを中止します。通常チャットのagentを中止しません。Ctrl+Dで閉じ、Ctrl+Oで広表示を切り替え、PgUp/PgDnでマップ・根拠・会話をスクロールします。新しい質問は会話末尾へ移動します。マップを見るにはPgUpを使います。
-
-110列未満では背景ペインを隠します。`focus`で横幅94%のfallbackを開きます。12行未満の端末ではペインを表示しません。Escで通常入力へ戻れます。geometryの変更時にも未送信の入力を保持します。Pi 1.0.4のcustom overlayOptions関数は実装上、表示時に一度だけ評価されるため、広表示・狭幅fallbackではcustom interactionを再mountします。独自のterminal rendererは作りません。
+ペイン内ではCtrl+Cが学習呼出しだけを中止します。通常チャットのagentを中止しません。PgUp/PgDnで本文の根拠・会話をスクロールします。新しい質問は会話末尾へ移動しますが、上部のminimapは残ります。Ctrl+Oで一操作で全体図へ戻れます。12行未満の端末ではペインを表示しません。幅や高さが変わってもnative Inputのcursor・paste・undo stateを保持し、通常editorは変更しません。
 
 ## スコープと固定根拠
 
@@ -127,7 +125,11 @@ restoreは`sessionManager.getBranch()`から行い、放棄したbranchの状態
 
 モデル呼出しは現在選択中のGPTを`ctx.modelRegistry.streamSimple`で呼びます。認証はPiのnative経路だけを使います。API keyの読出し・別CLI・自動model/provider変更・Claudeへのfallbackはありません。非GPTでは明示エラーにします。usage、provider/model、stop reason、native failureを学習側に記録します。失敗・中止は自動retryしません。結果を受け取れないshutdown時のusageは未確定と表示します。学習のusageはcustom stateに保存され、Piの通常session統計へは自動加算されません。
 
-`diagram`はモデルに別のJavaScriptを生成させず、検証済みマップからescaped HTML/SVGを組み立てます。source引用は含みますが学習会話は含みません。CSPでscriptを禁止し、temporary directoryに0600で保存します。Linuxは`xdg-open`、Darwinは`open`を引数配列で呼びます。保存先は通知します。起動失敗時もHTMLは残り、temporary fileは自動削除しません。
+`diagram`は検証済みマップからescaped HTML/SVGを組み立てます。TUIと同じM番号、stage/reason、全根拠引用と、番号へのanchor・全体図へ戻るanchorを持ちます。JavaScriptや外部assetは不要で、CSPでもscriptを禁止します。学習会話は含みません。local版はtemporary directoryに0600で保存し、Linuxは`xdg-open`、Darwinは`open`を引数配列で呼びます。起動失敗時もHTMLは残り、local temporary fileは自動削除しません。
+
+`diagram preview`だけがremote公開を開始します。固定HTML一枚だけを`127.0.0.1`の専用serverで配信し、推測困難なdocument URL以外（directoryやfilesystem pathを含む）は404です。既存の`home-preview add NAME PORT`と`url NAME`をshellなし・15秒timeoutで実行し、tailnet限定のTailscale Serve HTTPS URLを通知します。Funnelは使いません。source引用がtailnetから読めることを確認してから実行してください。map/ask/openでは自動公開しません。公開中にmapが変わってもHTMLは固定です。最新HTMLへの置換は再度`diagram preview`を実行します。
+
+既存helper・HTTPS certificate・Tailscale operator権限が必要です。extensionはインストール・認証・OS設定変更やsudoを行いません。`diagram stop`、scope/branch/session変更、shutdownでこのextensionのuniqueな登録だけを`remove NAME`し、serverを閉じます。他のServe登録は変更しません。開始失敗もcleanupし、cleanup失敗は通知します。serverは停止したまま、残った所有登録の削除を`diagram stop`でretryできます。
 
 ## 開発・検証
 
@@ -149,6 +151,6 @@ python3 tests/screenshots.py  # Firefoxの隔離profileで両modeのPNGを作り
 
 `native-qa.py`のbinary既定値は開発時のNix Pi 1.0.4です。他のbinaryでは`PI_UNDERSTANDING_BINARY=/path/to/pi`を指定します。専用config directoryとfixture repositoryを`.evidence/native-qa`に作り、個人のauth/settingsを開かず、明示ロードしたdeterministic providerだけを使います。実際の有料推論やnetwork inferenceは行いません。QA providerはpackage manifestに含めません。
 
-検証は本番のscope、runner、pane、extensionを使います。未commit分のindex/worktree/削除/未追跡source、branchの固定・移動、AI選択の確認境界、scope isolation、引用のexact一致、path traversal、symlink、HTML escape、active branch restore、会話分離、native failure/usage/cancellation、publication/handoffをテストします。実Pi RPCでnode_modulesのないraw sourceのloaderを確認し、PTYのfullscreen/regular両方で`focus`・初回`wide`送信後の入力所有、Ctrl+Alt+Uの往復と両方の下書き保持（120/80/160列）、fullscreenの左右入力先への完了したクリックと下書き保持（side・wide・narrow）、sessionに保存された質問の通常/学習振分け、背景入力、日本語paste/cursor marker、根拠付きマップ、通常chat、狭幅fallback、resize、cancel、failure、reloadを確認します。
+検証は本番のscope、runner、pane、extensionを使います。未commit分のindex/worktree/削除/未追跡source、branchの固定・移動、AI選択の確認境界、scope isolation、引用のexact一致、path traversal、symlink、HTML escape、active branch restore、会話分離、native failure/usage/cancellation、publication/handoffをテストします。実Pi RPCでnode_modulesのないraw sourceのloaderを確認し、PTYのfullscreen/regular両方で`focus`・互換`wide`の入力所有、Ctrl+Alt+Uの往復と両方の下書き保持（120/80/160列）、Ctrl+D後のdraft再開、sessionに保存された質問の通常/学習振分け、非表示時の通常入力、日本語paste/cursor marker、ほぼ全画面の表示、番号dive・引用・一操作の全体復帰、通常chat、resize、cancel、failure、reloadを確認します。previewテストは実loopback HTTPと注入したhome-preview adapterでroute・method・停止・開始失敗・cleanup失敗・世代競合を検証し、実Tailscale登録は実行しません。
 
-`.evidence/native-qa`にANSI stream、RPC記録、viewport別text/HTML、render-checks、source hashが残ります。`render-captures.mjs`のHTMLはANSIをxtermへreplayしたterminal gridです。Firefoxのheadless screenshotなどでPNGにできます。物理IMEのcandidate popup位置・macOS実機・実GitHub PR fetch・有料native GPT response品質はこのdeterministic QAだけでは確認できません。release受入れには独立reviewとホスト側Nix eval/buildを別途行います。
+`.evidence/native-qa`にANSI stream、RPC記録、viewport別text/HTML、render-checks、source hashが残ります。`render-captures.mjs`のHTMLはANSIをxtermへreplayしたterminal gridです。Firefoxのheadless screenshotなどでPNGにできます。物理IMEのcandidate popup位置・mosh実接続・macOS実機・実GitHub PR fetch・有料native GPT response品質・live Tailscale Serve/remote HTTPS・tailnet policyはこのdeterministic QAだけでは確認できません。release受入れには独立reviewとホスト側Nix eval/buildを別途行います。

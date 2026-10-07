@@ -1,13 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, chmod, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, chmod, rm } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
+import { setTimeout as delay } from "node:timers/promises";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
+import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import understanding from "../src/extension.ts";
 import { collectScope, pinnedFile } from "../src/scope.ts";
-import { ENTRY } from "../src/learning.ts";
+import { ENTRY, freshLearning, freshState } from "../src/learning.ts";
+import { UnderstandingPane } from "../src/pane.ts";
+import { initTheme, theme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
+import type { TUI, OverlayHandle } from "@earendil-works/pi-tui";
 
 test("production PR metadata path pins base/head without changing HEAD/index/worktree", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "understanding-pr-"));
@@ -72,4 +77,114 @@ test("publication tool cannot read learner dialogue; one optional question per m
     await command.handler("handoff", ctx); assert.deepEqual(sent, []); assert.equal(confirmations, 1);
     approved = true; await command.handler("handoff", ctx); assert.deepEqual(sent, ["explicitly approved implementation request"]);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("explicit preview command invokes only owned helper names; scope and shutdown boundaries clean up, with no automatic publication", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "understanding-preview-extension-"));
+  const oldPath = process.env.PATH;
+  let shutdown: (() => Promise<void>) | undefined;
+  try {
+    execFileSync("git", ["init", "-q"], { cwd: root });
+    await writeFile(path.join(root, "main.ts"), "export const value = 1;\n");
+    execFileSync("git", ["add", "."], { cwd: root });
+    execFileSync("git", ["-c", "user.name=QA", "-c", "user.email=qa@example.invalid", "commit", "-qm", "fixture"], { cwd: root });
+    const scope = await collectScope(root, { kind: "repository" }); const learning = freshLearning(scope);
+    learning.map = [{ flow: "read", responsibility: "owner", symbol: "value", contract: "constant", tests: "unverified", evidence: [{ path: "main.ts", ref: "worktree", start: 1, end: 1, quote: "export const value = 1;" }] }];
+    const state = freshState(scope.repository); state.active = scope.id; state.scopes[scope.id] = learning;
+    const branch = [{ type: "custom", customType: ENTRY, data: state }];
+    const bin = path.join(root, "fake-bin"), log = path.join(root, "calls.jsonl"), failRemove = path.join(root, "fail-remove"), holdRemove = path.join(root, "hold-remove"), removeEntered = path.join(root, "remove-entered"); await mkdir(bin);
+    await writeFile(path.join(bin, "home-preview"), `#!${process.execPath}\nconst fs = require('node:fs'); const args = process.argv.slice(2); fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args)+'\\n'); if(args[0] === 'remove' && fs.existsSync(${JSON.stringify(failRemove)})) { process.stderr.write('fixture removal denied'); process.exit(1); } if(args[0] === 'url') process.stdout.write('https://fixture.ts.net:8443/'); if(args[0] === 'remove' && fs.existsSync(${JSON.stringify(holdRemove)})) { fs.writeFileSync(${JSON.stringify(removeEntered)}, 'entered'); const timer = setInterval(() => { if(!fs.existsSync(${JSON.stringify(holdRemove)})) { clearInterval(timer); } }, 5); }\n`);
+    await chmod(path.join(bin, "home-preview"), 0o755); process.env.PATH = `${bin}:${oldPath}`;
+    let command!: Parameters<ExtensionAPI["registerCommand"]>[1];
+    const events = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void>>(); const notices: string[] = [];
+    let learnerCalls = 0;
+    const streams: ReturnType<typeof createAssistantMessageEventStream>[] = [];
+    const answer: AssistantMessage = { role: "assistant", api: "openai-responses", provider: "test", model: "gpt-test", content: [{ type: "text", text: JSON.stringify({ reply: "controlled response" }) }], stopReason: "stop", timestamp: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+    const completeStreams = async () => {
+      for (const stream of streams.splice(0)) { stream.push({ type: "text_delta", contentIndex: 0, delta: '{"reply":"controlled response"}', partial: answer }); stream.push({ type: "done", reason: "stop", message: answer }); stream.end(answer); }
+      await delay(0);
+    };
+    const context = { cwd: root, mode: "rpc", hasUI: true, model: { id: "gpt-test", provider: "test" }, modelRegistry: { streamSimple: () => { learnerCalls++; const stream = createAssistantMessageEventStream(); streams.push(stream); return stream; } }, sessionManager: { getBranch: () => branch }, ui: { notify: (text: string) => { notices.push(text); }, setStatus: () => {} } } as unknown as ExtensionCommandContext;
+    understanding({ registerCommand: (_name: string, definition: typeof command) => { command = definition; }, registerShortcut: () => {}, registerTool: () => {}, on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) => { events.set(name, handler); }, appendEntry: (customType: string, data: typeof state) => { branch.push({ type: "custom", customType, data }); } } as unknown as ExtensionAPI);
+    shutdown = () => events.get("session_shutdown")!({}, context);
+    await events.get("session_start")!({}, context);
+    await command.handler("overview", context); await command.handler("dive 1", context); await command.handler("open", context);
+    await assert.rejects(() => readFile(log), /ENOENT/);
+    await command.handler("diagram preview", context); assert.ok(notices.some(text => /https:\/\/fixture\.ts\.net:8443\/document-/.test(text)));
+    await command.handler("scope repository", context);
+    await command.handler("diagram preview", context); await shutdown();
+    const calls = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line) as string[]);
+    assert.deepEqual(calls.map(args => args[0]), ["add", "url", "remove", "add", "url", "remove"]);
+    assert.equal(calls[0]![1], calls[2]![1]); assert.equal(calls[3]![1], calls[5]![1]); assert.notEqual(calls[0]![1], calls[3]![1]);
+    // Cleanup still owns its name even when a transition restores no learning scope.
+    branch.splice(0, branch.length, { type: "custom", customType: ENTRY, data: state });
+    await events.get("session_start")!({}, context);
+    await command.handler("diagram preview", context);
+    await writeFile(failRemove, "deny");
+    branch.length = 0;
+    await events.get("session_tree")!({}, context);
+    assert.ok(notices.some(text => /fixture removal denied/.test(text)));
+    await rm(failRemove);
+    await command.handler("diagram stop", context);
+    assert.equal(notices.at(-1), "所有するpreviewを停止しました。");
+    const retried = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line) as string[]).slice(6);
+    assert.deepEqual(retried.map(args => args[0]), ["add", "url", "remove", "remove"]);
+    assert.equal(retried[0]![1], retried[2]![1]); assert.equal(retried[0]![1], retried[3]![1]);
+    // A command may arrive while another command is awaiting boundary cleanup.
+    branch.splice(0, branch.length, { type: "custom", customType: ENTRY, data: state });
+    await events.get("session_start")!({}, context);
+    await command.handler("diagram preview", context);
+    await writeFile(holdRemove, "hold");
+    const changing = command.handler("scope module main.ts", context);
+    try {
+      let entered = false;
+      for (let attempt = 0; attempt < 100 && !entered; attempt++) {
+        entered = await readFile(removeEntered).then(() => true, () => false);
+        if (!entered) await delay(10);
+      }
+      assert.ok(entered, "scope transition must reach owned removal before concurrent request");
+      const during = command.handler("diagram preview", context);
+      await command.handler("ask boundary-question", context);
+      await command.handler("map", context);
+      await rm(holdRemove);
+      await Promise.all([changing, during]);
+      await completeStreams();
+      assert.equal(learnerCalls, 0, "learner admission must stay closed for the complete transition");
+      assert.ok(!branch.at(-1)!.data.scopes[scope.id]!.turns.some(turn => turn.text === "boundary-question"));
+      const boundaryCalls = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line) as string[]).slice(10);
+      assert.deepEqual(boundaryCalls.map(args => args[0]), ["add", "url", "remove"], "no old-scope publication may queue behind transition cleanup");
+      assert.equal(boundaryCalls[0]![1], boundaryCalls[2]![1]);
+      await assert.rejects(fetch(`http://127.0.0.1:${boundaryCalls[0]![2]}/`));
+      assert.equal(branch.at(-1)!.data.scopes[branch.at(-1)!.data.active!]!.scope.request.kind, "module");
+      await command.handler("ask after-boundary", context);
+      assert.equal(learnerCalls, 1, "new scope can start learner inference after transition");
+      await completeStreams();
+      // Ctrl+T closes/remounts the pane while cancellation changes the active scope.
+      initTheme("dark", false);
+      const panes: UnderstandingPane[] = [];
+      let reopened!: () => void;
+      const mountedAgain = new Promise<void>(resolve => { reopened = resolve; });
+      const tui = { terminal: { columns: 120, rows: 36 }, requestRender: () => {} } as unknown as TUI;
+      const interactive = { ...context, mode: "tui", ui: { ...context.ui, select: async () => "repository — コード全体", confirm: async () => true, custom: (factory: (tui: TUI, th: typeof theme, kb: unknown, done: () => void) => UnderstandingPane, options: { onHandle: (handle: OverlayHandle) => void }) => new Promise<void>(done => {
+        const pane = factory(tui, theme, {}, done); panes.push(pane);
+        options.onHandle({ focus: () => { pane.focused = true; }, unfocus: () => { pane.focused = false; }, setHidden: () => {} } as unknown as OverlayHandle);
+        if (panes.length > 1) reopened();
+      }) } } as unknown as ExtensionCommandContext;
+      await command.handler("open", interactive);
+      await command.handler("ask pane-partial", interactive);
+      streams[0]!.push({ type: "text_delta", contentIndex: 0, delta: '{"reply":"OLD-SCOPE-PARTIAL', partial: answer });
+      await delay(0);
+      assert.ok(panes[0]!.partial?.includes("OLD-SCOPE-PARTIAL"));
+      panes[0]!.handleInput("scope-change-draft");
+      const draftEditor = panes[0]!.view().editor;
+      panes[0]!.handleInput("\x14");
+      await Promise.race([mountedAgain, delay(2000).then(() => { throw new Error("Ctrl+T must reopen confirmed target"); })]);
+      assert.equal(panes[1]!.view().input, "scope-change-draft");
+      assert.equal(panes[1]!.view().editor, draftEditor, "native unsent draft survives target selection");
+      assert.equal(panes[1]!.partial, undefined, "old-scope streaming text must not remount in new scope");
+      assert.ok(!panes[1]!.render(116).join("\n").includes("OLD-SCOPE-PARTIAL"));
+      await completeStreams();
+      assert.equal(panes[1]!.partial, undefined, "late old stream completion remains invalid");
+    } finally { await rm(holdRemove, { force: true }); await changing; }
+  } finally { await shutdown?.(); process.env.PATH = oldPath; await rm(root, { recursive: true, force: true }); }
 });

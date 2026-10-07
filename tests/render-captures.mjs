@@ -43,18 +43,17 @@ for (const label of ['wide', 'narrow', 'large']) {
   const ok = learning.includes('学習 > learner-draft-' + label) && main.includes('main-draft-' + label + '-tail') && preserved.includes('学習 > learner-draft-' + label + '-tail');
   focusChecks.push({ label, ok });
 }
-if (process.argv[2] !== 'regular') {
-  for (const label of ['side-120x36', 'wide-120x36', 'narrow-80x24']) {
-    const learning = await textAt('click-focus-' + label);
-    const main = await textAt('click-main-' + label);
-    const preserved = await textAt('click-preserved-' + label);
-    focusChecks.push({ label: 'fullscreen-mouse-' + label, ok:
-      learning.includes('学習 > mouse-learner-' + label) &&
-      main.includes('mouse-main-' + label + '-tail') &&
-      (label.startsWith('narrow') ? !main.includes('snapshot') : main.includes('通常チャットに入力')) &&
-      preserved.includes('学習 > mouse-learner-' + label + '-tail') });
-  }
-}
+focusChecks.push({ label: 'Ctrl+D-preserves-both-drafts', ok:
+  (await textAt('closed-draft-main-120x36')).includes('main-close-draft-tail') &&
+  !(await textAt('closed-draft-main-120x36')).includes('snapshot') &&
+  (await textAt('closed-draft-learner-120x36')).includes('学習 > learner-close-draft-tail') });
+focusChecks.push({ label: 'stable-overview-dive-return', ok:
+  (await textAt('point-detail-120x36')).includes('▶M1') &&
+  (await textAt('point-detail-120x36')).includes('return "working"') &&
+  (await textAt('point-overview-return-120x36')).includes('M1 送信する') &&
+  !(await textAt('point-overview-return-120x36')).includes('▶M1') });
+focusChecks.push({ label: 'near-fullscreen-display', ok:
+  (await textAt('japanese-focused-120x36')).split('\n').some(line => line.includes('╭' + '─'.repeat(110))) });
 focusChecks.push({ label: 'command-focus', ok: (await textAt('command-focus-input-120x36')).includes('学習 > command-focus-probe') });
 await writeFile(new URL('focus-render-checks.json', root), JSON.stringify(focusChecks, null, 2));
 const required = [
@@ -63,8 +62,9 @@ const required = [
   (await readFile(new URL('wide-first-input-120x36.txt', root), 'utf8')).includes('学習 > wide-first-probe'),
   byName('grounded-map-120x36')?.mapVisible,
   byName('main-input-background-120x36')?.mainInputVisible,
+  byName('main-input-background-120x36')?.scopeHeaderVisible === false,
   byName('japanese-focused-120x36')?.japaneseInputVisible,
-  byName('japanese-focused-120x36')?.cursor.x > 65,
+  byName('japanese-focused-120x36')?.cursor.x > 20,
   byName('main-chat-operational-120x36')?.mainChatVisible,
   byName('cancelled-learning-120x36')?.abortedVisible,
   byName('narrow-background-hidden-80x24')?.scopeHeaderVisible === false,

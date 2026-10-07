@@ -1,13 +1,15 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { collectScope, repositoryIdentity, fingerprint, pinnedFile, isWorktree, type ScopeRequest } from "./scope.ts";
-import { ENTRY, freshState, freshLearning, restore, LearningRunner, addReference, type State, type Learning, type Publication } from "./learning.ts";
+import { collectScope, repositoryIdentity, fingerprint, type ScopeRequest } from "./scope.ts";
+import { ENTRY, freshState, freshLearning, restore, LearningRunner, dive, overview, type State, type Learning, type Publication } from "./learning.ts";
 import { UnderstandingPane, terminalText, FOCUS_SHORTCUT, FOCUS_HINT, type PaneView } from "./pane.ts";
-import { openDiagram } from "./diagram.ts";
+import { openDiagram, diagramHtml } from "./diagram.ts";
+import { DiagramPreview } from "./preview.ts";
+import { referenceSnippet } from "./reference.ts";
 import { chooseTarget, targetMetadata } from "./targets.ts";
 
 export const HELP = `理解ペインは通常チャットとは別のGPT会話です。通常チャットの内容は読みません。
-/understand [open|toggle|focus|close|wide] — 背景表示 / 入力先変更
+/understand [open|toggle|focus|close|wide] — ほぼ全画面の学習表示 / 隠して通常入力
 /understand scope — 未commit分・branch・最近のcommit・PRを一覧で選択
 /understand targets — AIに相談するための候補情報
 /understand scope changes — HEADと未commit分の固定比較
@@ -19,15 +21,17 @@ export const HELP = `理解ペインは通常チャットとは別のGPT会話�
 /understand scopes — このbranchに保存したスコープへ戻る
 /understand check | refresh — 鮮度確認 / 明示更新（自動更新しません）
 /understand map | ask 質問 — 学習AIを呼ぶ
+/understand dive N | overview — M番号で詳細 / 全体図へ戻る（推論なし）
 /understand focus 対象 — 焦点のみ変更
-/understand reference path [base|head|index] — 固定内容の行番号表示
+/understand reference [path [base|head|index] [all|START-END]] — 選択根拠のsnippet、または先頭40行
 /understand questions on|off — milestoneの任意の理解確認
 /understand handoff — 内容を編集・確認して実装チャットへ明示送信
 /understand diagram — 根拠付きマップのみHTML保存・表示
+/understand diagram preview | stop — 明示的なtailnet HTTPS公開 / 所有する公開とserverの停止
 /understand reset | forget — 会話消去 / 現在スコープを削除
-Ctrl+Alt+U: 通常入力と学習入力の切替（両方の下書きを保持）。fullscreenではペインのクリックで学習入力、露出した通常入力欄のクリックで通常入力。
-学習入力: Ctrl+T 対象選択、Esc/Ctrl+G 通常入力、Ctrl+C 学習中止、Ctrl+D 閉じる、Ctrl+O 広表示、PgUp/PgDn 履歴。
-110列未満では背景ペインを隠します。focusで広表示。ペインは重ね表示で、通常チャットの幅は変えません。`;
+Ctrl+Alt+U: 学習表示・入力 ↔ 非表示・通常入力（両方の下書きを保持）。open/focus/wideは同じ学習表示です。
+学習入力: dive N / overview、Ctrl+O 全体へ、Ctrl+T 対象選択、Esc/Ctrl+G/Ctrl+D 隠す、Ctrl+C 学習中止、PgUp/PgDn 履歴。
+横幅・高さ96%のOverlay。12行未満では非表示。マップは明示mapだけで更新し、会話やdiveでは変えません。previewには既存home-previewとHTTPS/operator設定が必要です（Funnelではありません）。`;
 export function parseScope(args: string): ScopeRequest {
   if (args === "repository") return { kind: "repository" };
   if (args === "changes") return { kind: "changes" };
@@ -46,7 +50,14 @@ export default function understanding(pi: ExtensionAPI): void {
   let pane: UnderstandingPane | undefined;
   let finish: (() => void) | undefined;
   let generation = 0;
+  let stateTransitions = 0;
+  const transition = async <T>(action: () => Promise<T>): Promise<T> => {
+    stateTransitions++;
+    try { return await action(); } finally { stateTransitions--; }
+  };
   const runner = new LearningRunner();
+  const preview = new DiagramPreview();
+  let retainedView: PaneView | undefined;
   const current = (): Learning | undefined => state.active ? state.scopes[state.active] : undefined;
   const save = () => {
     const l = current();
@@ -57,28 +68,41 @@ export default function understanding(pi: ExtensionAPI): void {
     }
     pi.appendEntry(ENTRY, structuredClone(state));
   };
-  const close = () => { finish?.(); finish = undefined; pane = undefined; };
+  const close = () => { retainedView = pane?.view() ?? retainedView; finish?.(); finish = undefined; pane = undefined; };
+  const hide = () => pane?.release();
   const detachLearning = () => {
     generation++;
     const l = current();
     if (l?.pending) { l.pending = false; l.turns.push({ role: "notice", text: "スコープ・branch・sessionの変更で学習呼出しを中止しました。確定した使用量は取得できていません。", timestamp: Date.now() }); save(); }
     runner.detach();
+    // Native drafts survive remounts; streamed output and navigation belong to the old scope.
+    if (retainedView) retainedView = { ...retainedView, partial: undefined, error: "", offset: 0, followChat: false };
+    pane?.redraw(); pane?.navigate();
+    return preview.stop();
   };
-  const cleanup = () => { detachLearning(); close(); };
+  const cleanup = () => transition(async () => { close(); retainedView = undefined; await detachLearning(); });
   const notify = (message: string, kind: "info" | "warning" | "error" = "info") => ctx?.ui.notify(terminalText(message), kind);
   const redraw = (partial?: string) => pane?.redraw(partial);
-  const ask = (prompt: string) => {
+  const ask = (prompt: string, intent: "dialogue" | "map" = "dialogue") => {
+    if (stateTransitions) { notify("対象切替の処理中です。完了後に再実行してください。", "warning"); return; }
     const learning = current(); const context = ctx;
     if (!learning || !context) { notify("先にscopeを明示選択してください。", "warning"); return; }
-    void runner.ask(context, learning, prompt, redraw, save).catch(error => { if (pane) { pane.error = String(error); redraw(); } notify(String(error), "error"); });
+    const navigation = prompt.match(/^dive\s+M?(\d+)$/i);
+    if (navigation || prompt === "overview") {
+      try { if (navigation) dive(learning, Number(navigation[1])); else overview(learning); pane?.navigate(); save(); redraw(); } catch (error) { notify(String(error), "error"); }
+      return;
+    }
+    if (intent === "dialogue") pane?.followDialogue(); else pane?.navigate();
+    void runner.ask(context, learning, prompt, redraw, save, intent).catch(error => { if (pane) { pane.error = String(error); redraw(); } notify(String(error), "error"); });
   };
-  const open = (context: ExtensionContext, focus = false, wide = false, view?: PaneView): void => {
+  const open = (context: ExtensionContext, focus = true, wide = true, view: PaneView | undefined = retainedView): void => {
     if (context.mode !== "tui") { notify("ペインはTUI専用です。scope/check/map/askは非TUIでも利用できます。", "warning"); return; }
     if (pane) { pane.handle?.setHidden(false); if (focus) pane.focus(); return; }
+    if (view && !runner.running) view = { ...view, partial: undefined };
     let created: UnderstandingPane | undefined;
     void context.ui.custom<void>((tui, theme, _kb, done) => {
       finish = () => done();
-      created = new UnderstandingPane(tui, theme, current, { ask, cancel: () => runner.cancel(), close, choose: () => { const ticket = generation; close(); void chooseTarget(context).then(request => request && ticket === generation ? applyScope(request, context, true) : undefined).then(() => { if (ticket === generation || ctx === context) open(context, true); }).catch(error => notify(String(error), "error")); }, running: () => runner.running, layout: (nextWide, nextFocus) => {
+      created = new UnderstandingPane(tui, theme, current, { ask, cancel: () => runner.cancel(), close: hide, choose: () => { const ticket = generation; close(); void chooseTarget(context).then(request => request && ticket === generation ? applyScope(request, context, true) : undefined).then(() => { if (ticket === generation || ctx === context) open(context, true); }).catch(error => notify(String(error), "error")); }, running: () => runner.running, layout: (nextWide, nextFocus) => {
         if (pane !== created) return;
         const previous = created?.view(); close(); open(context, nextFocus, nextWide, previous);
       } }, wide, view);
@@ -86,8 +110,8 @@ export default function understanding(pi: ExtensionAPI): void {
       return created;
     }, { overlay: true, overlayOptions: () => created?.options() ?? { nonCapturing: true }, onHandle: handle => { if (created) { created.handle = handle; if (focus) created.focus(); } } }).catch(error => notify(String(error), "error")).finally(() => { if (pane === created) { pane = undefined; finish = undefined; } });
   };
-  const rebuild = async (context: ExtensionContext) => {
-    cleanup(); ctx = context;
+  const rebuild = (context: ExtensionContext) => transition(async () => {
+    try { await cleanup(); } catch (error) { notify(String(error), "error"); } ctx = context;
     try {
       const identity = await repositoryIdentity(context.cwd);
       state = restore(context.sessionManager.getBranch(), identity.repository);
@@ -97,11 +121,11 @@ export default function understanding(pi: ExtensionAPI): void {
       }
       context.ui.setStatus("understanding", `理解: ${FOCUS_HINT}`);
     } catch { state = freshState(""); }
-  };
+  });
   pi.on("session_start", async (_event, context) => { await rebuild(context); });
-  pi.on("session_before_tree", () => { cleanup(); });
+  pi.on("session_before_tree", async () => { await cleanup(); });
   pi.on("session_tree", async (_event, context) => { await rebuild(context); });
-  pi.on("session_shutdown", () => { cleanup(); ctx = undefined; });
+  pi.on("session_shutdown", async () => { try { await cleanup(); } catch (error) { notify(String(error), "error"); } ctx = undefined; });
   pi.on("model_select", (_event, context) => { ctx = context; });
   // UI-only freshness hint. No every-edit question or inference.
   pi.on("agent_settled", async (_event, context) => {
@@ -135,8 +159,11 @@ export default function understanding(pi: ExtensionAPI): void {
     }
     if (ticket !== generation) return undefined;
     if (!state.scopes[scope.id] && Object.keys(state.scopes).length >= 6) throw new Error("保存スコープは6件までです。/understand forget で削除してください。");
-    detachLearning(); state.repository = scope.repository; state.scopes[scope.id] ??= freshLearning(scope); state.active = scope.id; save(); redraw();
-    return scope;
+    return transition(async () => {
+      const boundary = generation + 1; await detachLearning(); if (boundary !== generation) return undefined;
+      state.repository = scope.repository; state.scopes[scope.id] ??= freshLearning(scope); state.active = scope.id; save(); redraw();
+      return scope;
+    });
   }
   pi.registerShortcut(FOCUS_SHORTCUT, {
     description: "通常入力 ↔ 学習入力（下書き保持）",
@@ -156,17 +183,17 @@ export default function understanding(pi: ExtensionAPI): void {
       try {
         if (command === "help") { notify(HELP); return; }
         if (command === "targets") { notify(JSON.stringify(await targetMetadata(context.cwd), null, 2)); return; }
-        if (command === "close") { runner.cancel(); close(); return; }
-        if (command === "toggle" && pane) { const hidden = !pane.handle?.isHidden(); if (hidden) pane.release(); pane.handle?.setHidden(hidden); return; }
+        if (command === "close") { runner.cancel(); hide(); return; }
+        // Cleanup belongs to the preview resource, not the current learning scope.
+        if (command === "diagram stop") { await preview.stop(); notify("所有するpreviewを停止しました。"); return; }
+        if (command === "toggle" && pane && !pane.handle?.isHidden()) { hide(); return; }
         if (command === "" || command === "open" || command === "toggle" || command === "focus" || command === "wide") {
           if (!current()) {
             if (!context.hasUI) throw new Error("先に /understand scope repository などで明示選択してください。");
             const request = await selectRequest(context); if (!request || ticket !== generation) return;
             if (!await applyScope(request, context, true)) return;
           }
-          if (command === "wide" && pane) { const view = pane.view(); close(); open(context, true, true, view); }
-          // Both focus commands must claim input on initial mount and on reuse.
-          else open(context, command === "focus" || command === "wide", command === "wide");
+          open(context);
           return;
         }
         if (command === "scopes") {
@@ -174,7 +201,10 @@ export default function understanding(pi: ExtensionAPI): void {
           const choices = Object.values(state.scopes).map(l => `${l.scope.id.slice(0, 12)} ${l.scope.request.kind} ${l.scope.head.slice(0, 12)}`);
           const choice = await context.ui.select("保存スコープ（現在のsession branch）", choices);
           if (!choice || ticket !== generation) return;
-          detachLearning(); state.active = Object.keys(state.scopes).find(id => choice.startsWith(id.slice(0, 12))); save(); redraw(); return;
+          await transition(async () => {
+            const boundary = generation + 1; await detachLearning(); if (boundary !== generation) return;
+            state.active = Object.keys(state.scopes).find(id => choice.startsWith(id.slice(0, 12))); save(); redraw();
+          }); return;
         }
         if (command === "scope" || command.startsWith("scope ") || command === "refresh") {
           const request = command === "refresh" ? current()?.scope.request : command === "scope" ? await selectRequest(context) : parseScope(command.slice(6));
@@ -182,20 +212,26 @@ export default function understanding(pi: ExtensionAPI): void {
           const scope = await applyScope(request, context, command === "scope"); if (!scope) return;
           open(context); notify(`固定スコープ ${scope.id}\nbase ${scope.base}\nhead ${scope.head}\n収集${scope.sources.length} / 未収集${scope.omitted}`); return;
         }
+        if (stateTransitions) throw new Error("対象切替の処理中です。完了後に再実行してください。");
         const l = current(); if (!l) throw new Error("先にscopeを明示選択してください。");
         if (command === "check") { const now = await fingerprint(l.scope.root, l.scope.request); if (ticket !== generation) return; l.stale = now === l.scope.fingerprint ? "current" : "stale"; save(); redraw(); notify(`根拠の状態: ${l.stale}。PR/commitは固定履歴です。PR先端の更新はrefreshのみ。`); }
-        else if (command === "map") { open(context); ask("利用者フロー→責任→重要な関数・契約・テストの小さい根拠付きマップを作成してください。理解質問は不要です。"); }
+        else if (command === "map") { open(context); ask("1-3行の概要、3-5段階の利用者フロー、重要な5-7点を目安に、段階の理由と重要性の理由、契約・失敗・テスト・正確な根拠を含むマップを作成してください。理解質問は不要です。", "map"); }
         else if (command.startsWith("ask ")) { open(context); ask(command.slice(4)); }
+        else if (/^dive\s+M?\d+$/i.test(command) || command === "overview") { ask(command); open(context); }
         else if (command.startsWith("focus ")) { l.focus = command.slice(6).slice(0, 2000); save(); redraw(); }
-        else if (command.startsWith("reference ")) {
-          const match = command.slice(10).match(/^(.*?)(?:\s+(base|head|index))?$/)!;
-          const source = await pinnedFile(l.scope, match[1]!, match[2] === "base" ? l.scope.base : match[2] === "index" ? "index" : isWorktree(l.scope.request) ? "worktree" : l.scope.head);
+        else if (command === "reference" || command.startsWith("reference ")) {
+          const text = await referenceSnippet(l, command.slice(10));
           if (ticket !== generation) return;
-          addReference(l, source); l.turns.push({ role: "notice", text: `${source.ref}:${source.path} sha256=${source.digest}\n${source.text.split("\n").map((line, i) => `${i + 1}: ${line}`).join("\n")}`, timestamp: Date.now() }); save(); redraw(); notify(`固定参照 ${source.ref}:${source.path}`);
+          l.turns.push({ role: "notice", text, timestamp: Date.now() }); save(); redraw(); notify(text.split("\n")[0]!);
         } else if (command === "questions on" || command === "questions off") { l.questions = command.endsWith("on"); save(); notify(`milestoneの任意理解確認: ${l.questions ? "on" : "off"}`); }
-        else if (command === "reset") { if (!context.hasUI || !await context.ui.confirm("学習会話とマップを消去しますか？", "固定スコープと根拠は保持します。")) return; if (ticket !== generation) return; detachLearning(); state.scopes[l.scope.id] = freshLearning(l.scope); save(); redraw(); }
-        else if (command === "forget") { if (!context.hasUI || !await context.ui.confirm("現在の学習スコープを削除しますか？", l.scope.id)) return; if (ticket !== generation) return; detachLearning(); delete state.scopes[l.scope.id]; state.active = undefined; save(); close(); }
+        else if (command === "reset") { if (!context.hasUI || !await context.ui.confirm("学習会話とマップを消去しますか？", "固定スコープと根拠は保持します。")) return; if (ticket !== generation) return; await transition(async () => { const boundary = generation + 1; await detachLearning(); if (boundary !== generation) return; state.scopes[l.scope.id] = freshLearning(l.scope); save(); redraw(); }); }
+        else if (command === "forget") { if (!context.hasUI || !await context.ui.confirm("現在の学習スコープを削除しますか？", l.scope.id)) return; if (ticket !== generation) return; await transition(async () => { const boundary = generation + 1; await detachLearning(); if (boundary !== generation) return; delete state.scopes[l.scope.id]; state.active = undefined; save(); close(); }); }
         else if (command === "diagram") { notify(await openDiagram(l)); }
+        else if (command === "diagram preview") {
+          if (!l.map.length) throw new Error("先に /understand map で根拠付きマップを作成してください。");
+          const url = await preview.start(diagramHtml(l));
+          if (url && ticket === generation) notify(`Tailnet限定preview（コード引用を含みます / 会話なし）: ${url}\n停止: /understand diagram stop`);
+        }
         else if (command === "handoff") {
           if (!context.hasUI) throw new Error("引き渡しは対話UIでの編集・確認が必要です。");
           const text = await context.ui.editor("実装AIへ渡す内容（学習会話は自動添付しません）", `学習スコープ ${l.scope.id}\n${l.scope.root}\nbase ${l.scope.base}\nhead ${l.scope.head}\nsnapshot ${l.scope.snapshot}\n焦点: ${l.focus}\n\n実装AIへの依頼:\n`);

@@ -15,7 +15,7 @@ export default function fixture(pi: ExtensionAPI): void {
       const waiting = latest.includes("WAIT_CANCEL");
       const sourceText = context.messages.filter(m => m.role === "user").map(m => typeof m.content === "string" ? m.content : JSON.stringify(m.content)).join("\n");
       const source = sourceText.match(/SOURCE ([^\n:]+):(src\/main\.ts) sha256=[^\n]*\n1: ([^\n]*)/);
-      const map = source ? [{ flow: "送信する", responsibility: "結果を返すハンドラ", symbol: "submit()", contract: "固定ソースに書かれた文字列を返す", tests: "この収集範囲では未確認", evidence: [{ path: source[2]!, ref: source[1]!, start: 1, end: 1, quote: source[3]! }] }] : [];
+      const map = source ? [{ stage: "結果を受け取る", stageReason: "返却する処理だから", importanceReason: "結果と失敗の契約を理解するため", flow: "送信する", responsibility: "結果を返すハンドラ", symbol: "submit()", contract: "固定ソースに書かれた文字列を返す", tests: "この収集範囲では未確認", evidence: [{ path: source[2]!, ref: source[1]!, start: 1, end: 1, quote: source[3]! }] }] : [];
       const reply = learning ? JSON.stringify({ reply: "日本語の学習回答です。通常の実装チャットとは独立しています。\n\n## 責任と失敗\n固定した根拠だけを確認しました。省略したファイルは未確認です。\n\n- 入力 → 検証 → 結果\n- テストの存在は追加参照で確認できます。", map }) : "main-chat-probe: 通常の実装チャットは動作しています。";
       const msg: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider, model: model.id, content: [{ type: "text", text: reply }], stopReason: "stop", timestamp: Date.now(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
       void (async () => {

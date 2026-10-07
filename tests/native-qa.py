@@ -94,7 +94,9 @@ def drain(seconds=.4):
             if not block: return
             raw.extend(block)
 def send(text): os.write(master, text.encode()); drain(.4)
-def command(text): send(text + '\r')
+def command(text):
+    # All normal commands run in the ordinary editor; near-fullscreen learning has no background-input mode.
+    send('\x1b'); send(text + '\r')
 SHORTCUT = '\x1b[117;7u'  # native CSI-u Ctrl+Alt+U, no terminal mouse enabling
 learner_probes = ['wide-first-probe', 'command-focus-probe', 'learner-draft-wide-tail', 'learner-draft-narrow-tail', 'learner-draft-large-tail']
 main_probes = ['main-draft-wide-tail', 'main-draft-narrow-tail', 'main-draft-large-tail']
@@ -118,38 +120,19 @@ command('/understand close'); command('/understand focus'); send('command-focus-
 send('\r'); drain(3); send('\x07')
 command('/understand close'); command('/understand wide'); send('wide-first-probe'); capture('wide-first-input-120x36', 120, 36)
 send('\r'); drain(3); send('\x1b')
-command('/understand map'); drain(3); command('/understand focus'); send('\x1b[5~' * 10); capture('grounded-map-120x36', 120, 36); send('\x1b')
-# Background pane must not own ordinary input.
+command('/understand map'); drain(3); command('/understand overview'); capture('grounded-map-120x36', 120, 36)
+send('dive 1\r'); capture('point-detail-120x36', 120, 36)
+send('\x0f'); capture('point-overview-return-120x36', 120, 36); send('\x1b')
+# Hidden overlay must not own ordinary input.
 send('main-input-still-active'); capture('main-input-background-120x36', 120, 36)
 send('\x15'); focus_roundtrip('wide', 120, 36)
-def click(x, y):
-    # Completed native SGR click; never enable mouse tracking from the extension/test.
-    send(f'\x1b[<0;{x};{y}M\x1b[<0;{x};{y}m')
-def mouse_roundtrip(label, cols, rows):
-    send('mouse-main-' + label)
-    if cols < 110: send(SHORTCUT)  # narrow background is intentionally hidden
-    else: click(90, 3)
-    send('mouse-learner-' + label); capture('click-focus-' + label, cols, rows)
-    # At narrow width only the left edge of the native main editor is exposed.
-    click(1, rows - 4); send('\x05'); send('-tail')
-    capture('click-main-' + label, cols, rows)
-    if cols < 110: send(SHORTCUT)
-    else: click(90, 3)
-    send('-tail'); capture('click-preserved-' + label, cols, rows)
-    send('\r'); drain(3)
-    click(1, rows - 4); send('\r'); drain(1)
-    learner_probes.append('mouse-learner-' + label + '-tail')
-    main_probes.append('mouse-main-' + label + '-tail')
-if MODE == 'fullscreen': mouse_roundtrip('side-120x36', 120, 36)
-# Explicit wide geometry also releases/collapses without losing either draft.
-if MODE == 'fullscreen':
-    send('mouse-main-wide-120x36')
-    send(SHORTCUT); send('\x0f')
-    send('mouse-learner-wide-120x36'); capture('click-focus-wide-120x36', 120, 36)
-    click(1, 32); send('\x05'); send('-tail'); capture('click-main-wide-120x36', 120, 36)
-    click(90, 3); send('-tail'); capture('click-preserved-wide-120x36', 120, 36)
-    send('\r'); drain(3); click(1, 32); send('\r'); drain(1)
-    learner_probes.append('mouse-learner-wide-120x36-tail'); main_probes.append('mouse-main-wide-120x36-tail')
+# The old side/wide exposed-editor mouse routing contract is intentionally retired.
+# Ctrl+D hides without destroying the learner's unsent draft; normal draft remains independent.
+send('main-close-draft'); send(SHORTCUT); send('learner-close-draft'); send('\x04')
+send('-tail'); capture('closed-draft-main-120x36', 120, 36)
+send(SHORTCUT); send('-tail'); capture('closed-draft-learner-120x36', 120, 36)
+send('\r'); drain(3); send(SHORTCUT); send('\r'); drain(1)
+learner_probes.append('learner-close-draft-tail'); main_probes.append('main-close-draft-tail')
 command('/understand focus')
 send('\x1b[200~質問：責任を説明してください\x1b[201~'); capture('japanese-focused-120x36', 120, 36)
 send('\r'); drain(3); capture('learning-dialogue-120x36', 120, 36)
@@ -157,18 +140,17 @@ send('\x1b'); command('main-chat-probe'); drain(.8); capture('main-chat-operatio
 command('/understand focus'); send('WAIT_CANCEL\r'); drain(.2); send('\x03'); drain(2); capture('cancelled-learning-120x36', 120, 36)
 send('\x1b'); resize(80, 24); capture('narrow-background-hidden-80x24', 80, 24)
 focus_roundtrip('narrow', 80, 24)
-if MODE == 'fullscreen': mouse_roundtrip('narrow-80x24', 80, 24)
 command('/understand focus'); capture('narrow-focus-fallback-80x24', 80, 24)
 resize(160, 48); capture('wide-focused-160x48', 160, 48)
 send('\x1b'); focus_roundtrip('large', 160, 48)
 command('/understand ask FAIL_NATIVE'); drain(3); capture('native-failure-cleanup-160x48', 160, 48)
-command('/reload'); drain(1); command('/understand open'); capture('reload-restored-160x48', 160, 48)
+command('/reload'); drain(1); command('/understand open'); send('\x1b[6~' * 10); capture('reload-restored-160x48', 160, 48)
 # The implementation agent proposes a target while the learner is in wide view.
 command('/understand close')
-command('QA_TARGET_DELAY'); command('/understand wide'); send('draft-to-preserve'); drain(3)
+command('QA_TARGET_DELAY'); send('/understand wide\r'); send('draft-to-preserve'); drain(3)
 capture('ai-target-confirm-visible-160x48', 160, 48)
 send('\x1b'); drain(.8); capture('ai-target-cancel-restored-160x48', 160, 48)
-send('\x1b'); command('QA_TARGET_DELAY'); command('/understand wide'); drain(3)
+send('\x1b'); command('QA_TARGET_DELAY'); send('/understand wide\r'); drain(3)
 capture('ai-target-accept-visible-160x48', 160, 48)
 send('\r'); drain(1); capture('ai-target-changed-160x48', 160, 48)
 send('\x1b'); command('/qa-exit'); drain(.7)
