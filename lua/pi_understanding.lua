@@ -128,7 +128,7 @@ function M.identity(buf)
   local s = states[buf or vim.api.nvim_get_current_buf()]; check(s, 'not an evidence buffer')
   return identity_text(s)
 end
-function M.open(file)
+function M.open(file, options)
   local data = read_private(file)
   local lines, annotations = validate(data) -- Validate fully before touching windows/buffers.
   local buf = vim.api.nvim_create_buf(false, true)
@@ -141,11 +141,15 @@ function M.open(file)
   vim.b[buf].pi_understanding_identity = data.identity
   vim.b[buf].pi_understanding_evidence = { start = data.evidence.start, ['end'] = data.evidence['end'] }
   vim.b[buf].pi_understanding_annotations_visible = data.annotationsVisible
-  -- Keep an existing server's active work/draft in its own window; never replace its buffer.
-  vim.cmd('botright vnew')
+  -- Fresh viewer launches reuse the startup window; existing server/manual opens preserve work in a split.
+  if not (options and options.reuse_window == true) then vim.cmd('botright vnew') end
   local empty = vim.api.nvim_get_current_buf()
   vim.api.nvim_win_set_buf(0, buf)
-  if vim.api.nvim_buf_is_valid(empty) and vim.api.nvim_buf_get_name(empty) == '' and not vim.bo[empty].modified then vim.api.nvim_buf_delete(empty, { force = false }) end
+  if vim.api.nvim_buf_is_valid(empty) and vim.api.nvim_buf_get_name(empty) == ''
+    and not vim.bo[empty].modified and vim.bo[empty].buftype == ''
+    and vim.api.nvim_buf_line_count(empty) == 1 and vim.api.nvim_buf_get_lines(empty, 0, 1, false)[1] == '' then
+    vim.api.nvim_buf_delete(empty, { force = false })
+  end
   vim.wo.number = true; vim.wo.relativenumber = false
   vim.wo.winbar = ('Fixed %s:%s | AI interpretation | ga toggle, ]a/[a chunks, ]e/[e range, gi identity'):format(data.identity.ref, data.identity.path):gsub('%%', '%%%%')
   vim.api.nvim_buf_set_extmark(buf, M.namespaces.range, data.evidence.start - 1, 0, {

@@ -11,6 +11,7 @@ local ok, err = xpcall(function()
   assert(not vim.g.handoff_injected, 'source metacharacters and modelines must not execute')
   local data = vim.json.decode(table.concat(vim.fn.readfile(vim.env.PI_UNDERSTANDING_NVIM_HANDOFF), '\n'))
   local buf = vim.api.nvim_get_current_buf()
+  assert(#vim.api.nvim_tabpage_list_wins(0) == 1, 'new viewer must show only the evidence pane, without an empty split')
   if vim.env.PI_UNDERSTANDING_TEST_FAIL_READONLY == '1' then vim.bo[buf].readonly = false end
   assert(vim.bo[buf].readonly and not vim.bo[buf].modifiable, 'startup evidence buffer must be readonly and nonmodifiable')
   assert(vim.bo[buf].buftype == 'nofile' and not vim.bo[buf].modeline, 'startup must select the fixed scratch buffer')

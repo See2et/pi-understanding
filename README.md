@@ -49,7 +49,7 @@ Neovimには選択した根拠の**固定file全体**と同じ注釈を渡すた
 
 #### 設定なしで今のterminalに開く（既定）
 
-対話TUIで`/u nvim`、またはペインのCtrl+Alt+Nを実行すると、PiのTUIを一時停止して、今のterminalをインストール済みの`nvim`に渡します。server、socket、環境変数の設定は不要です。`:qa`で終了するとPiへ戻り、選択根拠・表示位置・入力focusと通常／学習入力の未送信draftを保持します。起動失敗・異常終了でもTUIを再開し、エラーを通知します。同時に複数のterminal受渡しは行いません。
+対話TUIで`/u nvim`、またはペインのCtrl+Alt+Nを実行すると、PiのTUIを一時停止して、今のterminalをインストール済みの`nvim`に渡します。server、socket、環境変数の設定は不要です。新規起動では左右分割を追加せず、起動時のウィンドウに該当コードだけを表示します。`:qa`で終了するとPiへ戻り、選択根拠・表示位置・入力focusと通常／学習入力の未送信draftを保持します。起動失敗・異常終了でもTUIを再開し、エラーを通知します。同時に複数のterminal受渡しは行いません。
 
 `nvim`がPATHにない場合は明示エラーです。RPC・print・TTYのない実行では不可視のinteractive processを起動しません。`/u nvim export`、または以下の明示server／別terminal設定を使えます。DISPLAYやWAYLANDの存在からGUIを自動起動することはありません。
 

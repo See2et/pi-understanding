@@ -30,7 +30,7 @@ export async function writeNeovimHandoff(data: NeovimHandoff): Promise<string> {
   catch (error) { await rm(directory, { recursive: true, force: true }); throw error; }
 }
 // Fixed code only. Paths arrive as data through environment / luaeval argument, never evaluated Lua.
-export const NVIM_LAUNCH = "lua dofile(vim.env.PI_UNDERSTANDING_NVIM_PLUGIN .. '/lua/pi_understanding.lua').open(vim.env.PI_UNDERSTANDING_NVIM_HANDOFF)";
+export const NVIM_LAUNCH = "lua dofile(vim.env.PI_UNDERSTANDING_NVIM_PLUGIN .. '/lua/pi_understanding.lua').open(vim.env.PI_UNDERSTANDING_NVIM_HANDOFF, { reuse_window = true })";
 /** Load normal user config/plugins, then the receiver; --cmd's buffer is reset by startup. Disable viewer ShaDa/swap writes. */
 export const neovimLaunchArgs = (): string[] => ["-i", "NONE", "-n", "-c", NVIM_LAUNCH];
 const vimString = (text: string) => `'${text.replaceAll("'", "''")}'`;
