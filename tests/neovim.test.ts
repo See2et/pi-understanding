@@ -100,13 +100,13 @@ test("new-launch verification rejects a deliberately failed required readonly in
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-test("whole fixed source is mandatory; explicit export/launch configuration, missing binary/server and injection boundaries fail without live fallback", async () => {
+test("whole fixed source is mandatory; noninteractive default, missing binary/server and injection boundaries fail without live fallback", async () => {
   const learning = freshLearning(scope()); learning.evidenceView = evidence;
   const oldEnv = Object.fromEntries(["PI_UNDERSTANDING_NVIM_SERVER", "PI_UNDERSTANDING_NVIM_TERMINAL", "PI_UNDERSTANDING_NVIM_BINARY", "NVIM_LOG_FILE"].map(k => [k, process.env[k]]));
   try {
     for (const k of Object.keys(oldEnv)) delete process.env[k];
     process.env.NVIM_LOG_FILE = path.join(pluginRoot, ".evidence/neovim/nvim.log");
-    await assert.rejects(openNeovim(learning), /明示設定/);
+    await assert.rejects(openNeovim(learning), /対話TUIとTTY/);
     process.env.PI_UNDERSTANDING_NVIM_SERVER = "/no-such-pi-understanding-server";
     process.env.PI_UNDERSTANDING_NVIM_BINARY = "/no-such-nvim";
     await assert.rejects(openNeovim(learning), /executable unavailable/);

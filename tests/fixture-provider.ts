@@ -57,7 +57,9 @@ export default function fixture(pi: ExtensionAPI): void {
         // One bounded readonly retrieval round, so QA renders the visible need/search progress.
         payload = { reply: "README と入口の実装を確認するため、固定snapshotから追加で読みます。", need: [{ path: "README.md", start: 1, end: 2, why: "利用者フローの記述を確認" }], search: [{ text: "submit", why: "入口の所在を確認" }] };
       } else if (intent === "GENERATE_MODEL") {
-        const main = pick("src/main.ts", 1); const readme = pick("README.md", 2);
+        const picked = pick("src/main.ts", 1);
+        const main = picked ? { ...picked, annotations: [{ start: 1, end: 1, text: "固定の結果文字列を返す入口。" }] } : undefined;
+        const readme = pick("README.md", 2);
         payload = {
           reply: "固定した対象からモデルを生成しました。引用は照合済みですが、主張の意味は解釈です。",
           modelSummary: "送信から結果までの小さな流れと、その根拠を固定対象から説明します。",

@@ -40,15 +40,16 @@ function terminalArgs(raw: string): string[] {
   if (!Array.isArray(args) || !args.length || args.length > 8 || args.some(a => typeof a !== "string" || !a || a.length > 1000 || /[\x00-\x1f\x7f]/.test(a))) throw new Error("PI_UNDERSTANDING_NVIM_TERMINAL must be a bounded JSON argv array, e.g. [\"xterm\",\"-e\"]");
   return args as string[];
 }
-/** Explicit one-way export/launch. Does not take Pi's terminal or start a hidden interactive nvim. */
-export async function openNeovim(learning: Learning, mode: "open" | "export" = "open", stillCurrent: () => boolean = () => true): Promise<string> {
+/** The caller owns interactive terminal suspension/restoration; this module owns fixed-source handoff. */
+export type InPlaceNeovim = (binary: string, args: string[], env: NodeJS.ProcessEnv) => Promise<void>;
+export async function openNeovim(learning: Learning, mode: "open" | "export" = "open", stillCurrent: () => boolean = () => true, inPlace?: InPlaceNeovim): Promise<string> {
   const evidence = learning.evidenceView;
   if (!evidence) throw new Error("先に /u select ID と /u evidence N で固定根拠を選択してください。");
   const server = mode === "open" ? process.env.PI_UNDERSTANDING_NVIM_SERVER : undefined;
   const terminal = mode === "open" ? process.env.PI_UNDERSTANDING_NVIM_TERMINAL : undefined;
   const binary = process.env.PI_UNDERSTANDING_NVIM_BINARY ?? "nvim";
   const argv = !server && terminal ? terminalArgs(terminal) : undefined;
-  if (mode === "open" && !server && !argv) throw new Error("Neovimを開くには PI_UNDERSTANDING_NVIM_SERVER または PI_UNDERSTANDING_NVIM_TERMINAL を明示設定してください。手動受渡しは /u nvim export。Piのterminalは奪いません。");
+  if (mode === "open" && !server && !argv && !inPlace) throw new Error("Neovimの直接表示には対話TUIとTTYが必要です。手動受渡しは /u nvim export。別terminal/serverの明示設定も利用できます。");
   if (server && (server.length > 1000 || /[\x00-\x1f\x7f]/.test(server))) throw new Error("Invalid Neovim server address");
   if (mode === "open") {
     try { await exec(binary, ["--version"], { timeout: 5000, maxBuffer: 16_000 }); }
@@ -63,6 +64,8 @@ export async function openNeovim(learning: Learning, mode: "open" | "export" = "
     if (server) {
       const result = await exec(binary, ["--server", server, "--remote-expr", serverExpression(file)], { timeout: 10_000, maxBuffer: 16_000 });
       if (!/^\d+\s*$/.test(result.stdout) || Number(result.stdout) < 1) throw new Error(`Neovim server did not open evidence: ${result.stderr || result.stdout}`);
+    } else if (!argv) {
+      await inPlace!(binary, neovimLaunchArgs(), { ...process.env, PI_UNDERSTANDING_NVIM_PLUGIN: pluginRoot, PI_UNDERSTANDING_NVIM_HANDOFF: file });
     } else {
       await new Promise<void>((resolve, reject) => {
         const child = spawn(argv![0]!, [...argv!.slice(1), binary, ...neovimLaunchArgs()], {

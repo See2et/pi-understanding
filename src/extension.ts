@@ -1,3 +1,5 @@
+import { spawnSync } from "node:child_process";
+import type { TUI } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { collectScope, repositoryIdentity, fingerprint, type ScopeRequest } from "./scope.ts";
@@ -16,7 +18,7 @@ export const HELP = `理解ペインは通常チャットとは別のGPT会話�
 /u model — モデル全体像を明示生成（概念・ルール・境界・振る舞い・理由）。問いは任意。
 /u select CLAIM_ID | evidence N | back | overview — 主張・固定根拠・戻る（推論なし）
 /u annotations on|off|toggle — 原文とは別のAI注釈の表示切替（Ctrl+Alt+A）
-/u nvim [export] — 選択根拠を固定file全体・同じ注釈付きでNeovimへ（Ctrl+Alt+N）。明示server/別terminal設定が必要。exportは手動受渡し
+/u nvim [export] — 選択根拠を固定file全体・同じ注釈付きでNeovimへ（Ctrl+Alt+N）。設定不要で今のterminalに表示、:qaでPiへ戻る。exportは手動受渡し
 /u quiet | questions on|off | skip — 問いを非表示 / 選択した問いをスキップ
 /u proposal 内容 | proposal clear — これからの変更案を仮説として相談 / 仮説を解除
 /u info | storage — 固定対象とprivate local保存の情報
@@ -56,7 +58,15 @@ export function parseScope(args: string): ScopeRequest {
   if (pr) return { kind: "pr", number: pr[1]! };
   throw new Error("scope changes | branch REF [BASE] | repository | module PATH | commit REF PARENT | pr NUMBER");
 }
-export default function understanding(pi: ExtensionAPI): void {
+type TerminalLaunch = (binary: string, args: string[], env: NodeJS.ProcessEnv) => void;
+const runTerminal: TerminalLaunch = (binary, args, env) => {
+  const result = spawnSync(binary, args, { stdio: "inherit", env });
+  if (result.error) throw result.error;
+  if (result.signal) throw new Error(`Neovim terminated by ${result.signal}`);
+  if (result.status !== 0) throw new Error(`Neovim exited with code ${result.status}`);
+};
+/** Optional adapters keep the public command's terminal lifecycle verifiable without a hidden process. */
+export default function understanding(pi: ExtensionAPI, terminal: { interactive?: () => boolean; run?: TerminalLaunch } = {}): void {
   let ctx: ExtensionContext | undefined;
   let state: State = freshState("");
   let pane: UnderstandingPane | undefined;
@@ -95,6 +105,44 @@ export default function understanding(pi: ExtensionAPI): void {
   const cleanup = () => transition(async () => { close(); retainedView = undefined; await detachLearning(); });
   const notify = (message: string, kind: "info" | "warning" | "error" = "info") => ctx?.ui.notify(terminalText(message), kind);
   const redraw = (partial?: string) => pane?.redraw(partial);
+  let neovimBusy = false;
+  const launchNeovim = async (learning: Learning, context: ExtensionContext, mode: "open" | "export") => {
+    if (neovimBusy) throw new Error("Neovim受渡しの処理中です。終了後に再実行してください。");
+    neovimBusy = true;
+    const ticket = generation;
+    const stillCurrent = () => ticket === generation && ctx === context;
+    try {
+      const interactive = context.mode === "tui" && context.hasUI && (terminal.interactive?.() ?? (process.stdin.isTTY && process.stdout.isTTY));
+      const inPlace = interactive ? async (binary: string, args: string[], env: NodeJS.ProcessEnv) => {
+        let owner!: TUI;
+        let complete!: (result: { error?: unknown }) => void;
+        // Mount first: done() before an overlay mounts would pop the retained learning pane.
+        const result = await context.ui.custom<{ error?: unknown }>((tui, _theme, _kb, done) => {
+          owner = tui; complete = done;
+          return { render: () => [], invalidate: () => {} };
+        }, { overlay: true, overlayOptions: { nonCapturing: true }, onHandle: () => {
+          let error: unknown;
+          let suspended = false;
+          try {
+            if (!stillCurrent()) throw new Error("対象が変わったためNeovim受渡しを中止しました。");
+            suspended = true;
+            owner.stop();
+            process.stdout.write("\x1b[2J\x1b[H");
+            // Synchronous inherited stdio: Pi cannot consume input/render or dispatch another takeover until exit.
+            (terminal.run ?? runTerminal)(binary, args, env);
+          } catch (failure) { error = failure; }
+          finally {
+            try { if (suspended) { owner.start(); owner.requestRender(true); } }
+            catch (failure) { error = error ?? failure; }
+            finally { complete({ error }); }
+          }
+        } });
+        if (result.error) throw result.error;
+      } : undefined;
+      const message = await openNeovim(learning, mode, stillCurrent, inPlace);
+      if (stillCurrent()) notify(message);
+    } finally { neovimBusy = false; }
+  };
   const ask = (prompt: string, intent: LearningIntent = "dialogue") => {
     if (stateTransitions) { notify("対象切替の処理中です。完了後に再実行してください。", "warning"); return; }
     const learning = current(); const context = ctx;
@@ -105,8 +153,7 @@ export default function understanding(pi: ExtensionAPI): void {
     const evidence = prompt.match(/^evidence(?:\s+(\d+))?$/);
     const annotations = prompt.match(/^annotations(?:\s+(on|off|toggle))?$/);
     if (prompt === "nvim" || prompt === "nvim export") {
-      const ticket = generation;
-      void openNeovim(learning, prompt.endsWith("export") ? "export" : "open", () => ticket === generation).then(text => { if (ticket === generation) notify(text); }).catch(error => notify(String(error), "error"));
+      void launchNeovim(learning, context, prompt.endsWith("export") ? "export" : "open").catch(error => notify(String(error), "error"));
       return;
     }
     if (annotations || navigation || claim || evidence || ["overview", "back", "skip", "quiet", "questions on", "questions off", "proposal clear"].includes(prompt)) {
@@ -270,7 +317,7 @@ export default function understanding(pi: ExtensionAPI): void {
         if (stateTransitions) throw new Error("対象切替の処理中です。完了後に再実行してください。");
         const l = current(); if (!l) throw new Error("先にscopeを明示選択してください。");
         if (command === "check") { const now = await fingerprint(l.scope.root, l.scope.request); if (ticket !== generation) return; l.stale = now === l.scope.fingerprint ? "current" : "stale"; save(); redraw(); notify(`根拠の状態: ${l.stale}。PR/commitは固定履歴です。PR先端の更新はrefreshのみ。`); }
-        else if (command === "nvim" || command === "nvim export") { const message = await openNeovim(l, command.endsWith("export") ? "export" : "open", () => ticket === generation); if (ticket === generation) notify(message); }
+        else if (command === "nvim" || command === "nvim export") { await launchNeovim(l, context, command.endsWith("export") ? "export" : "open"); }
         else if (/^annotations(?:\s+(?:on|off|toggle))?$/.test(command)) { ask(command); }
         else if (command === "model") { open(context); ask("model"); }
         else if (command === "info") { notify(JSON.stringify({ request: l.scope.request, id: l.scope.id, base: l.scope.base, head: l.scope.head, snapshot: l.scope.snapshot, capturedAt: l.scope.capturedAt, stale: l.stale, proposal: l.proposal, localSnapshot: l.scope.localSnapshot }, null, 2)); }

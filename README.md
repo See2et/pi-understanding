@@ -47,9 +47,17 @@ Nix側のrevision更新はルートflake.lockで行います。Piの認証・設
 
 Neovimには選択した根拠の**固定file全体**と同じ注釈を渡すため、根拠外の前後のコードも読めます。学習会話は渡しません。`pinnedFile`で全体を取得できない旧snapshot・未捕捉file・削除済みsnapshotでは失敗し、live worktreeへfallbackしません。注釈の自動追記、同期、Neovim側のAI呼出しはありません。
 
-#### 既存Neovim serverへ開く
+#### 設定なしで今のterminalに開く（既定）
 
-Neovim 0.10以降の標準Lua APIだけを使う薄いpluginを`lua/`と`plugin/`に同梱しています。外部pluginのinstallやglobal configの編集は不要です。下記の`PACKAGE`はこのcheckoutまたはPiが読み込むraw package directoryです。
+対話TUIで`/u nvim`、またはペインのCtrl+Alt+Nを実行すると、PiのTUIを一時停止して、今のterminalをインストール済みの`nvim`に渡します。server、socket、環境変数の設定は不要です。`:qa`で終了するとPiへ戻り、選択根拠・表示位置・入力focusと通常／学習入力の未送信draftを保持します。起動失敗・異常終了でもTUIを再開し、エラーを通知します。同時に複数のterminal受渡しは行いません。
+
+`nvim`がPATHにない場合は明示エラーです。RPC・print・TTYのない実行では不可視のinteractive processを起動しません。`/u nvim export`、または以下の明示server／別terminal設定を使えます。DISPLAYやWAYLANDの存在からGUIを自動起動することはありません。
+
+Neovimは`-u NONE -i NONE -n`で起動し、通常の初期化後の`-c` commandで同梱Luaを読み、固定根拠bufferを選択します。ユーザーconfig、swap、shadaは使いません。Neovim 0.10以降の標準Lua APIだけを使う薄いpluginを`lua/`と`plugin/`に同梱しており、外部pluginのinstallやglobal configの編集は不要です。
+
+#### 既存Neovim serverへ開く（任意）
+
+下記の`PACKAGE`はこのcheckoutまたはPiが読み込むraw package directoryです。
 
 別terminalでNeovimを明示起動します。pluginのruntimepath追加はその実行だけに適用します。
 
@@ -72,7 +80,7 @@ Piで`/u select ID`、`/u evidence N`、`/u nvim`を実行します。すでに�
 
 #### 新しい別terminalで起動する
 
-PiのterminalをNeovimに渡すことはしません。ユーザーがすでに利用しているterminal launcherのargvをJSON配列で指定した場合だけ、別terminalで新しいNeovimを起動します。shell commandではありません。server設定がある場合はserverが優先します。
+今のterminalの代わりに、別terminalを使う任意設定です。ユーザーがすでに利用しているterminal launcherのargvをJSON配列で指定した場合だけ、別terminalで新しいNeovimを起動します。shell commandではありません。server設定がある場合はserverが優先します。
 
 ```sh
 # 例: インストール済みxtermを使う場合。extensionはinstallしません。
@@ -81,7 +89,7 @@ export PI_UNDERSTANDING_NVIM_TERMINAL='["xterm","-e"]'
 pi -e "$HOME/ghq/github.com/See2et/pi-understanding"
 ```
 
-新しいNeovimは`-u NONE -i NONE -n`で起動し、通常の初期化が完了した後の`-c` commandで、その実行だけ同梱Luaを読み、固定根拠bufferを選択します。ユーザーconfig、swap、shadaは使いません。Piへの成功通知はlauncherの開始までを確認します。開始後のterminalやNeovimのエラーは別terminalで確認してください。visible terminalを作るlauncherを指定する責任はユーザー側にあります。未設定では不可視のinteractive Neovimを起動せず、設定方法と手動exportを案内します。
+新しいNeovimは`-u NONE -i NONE -n`で起動し、通常の初期化が完了した後の`-c` commandで、その実行だけ同梱Luaを読み、固定根拠bufferを選択します。ユーザーconfig、swap、shadaは使いません。Piへの成功通知はlauncherの開始までを確認します。開始後のterminalやNeovimのエラーは別terminalで確認してください。visible terminalを作るlauncherを指定する責任はユーザー側にあります。この設定がなければ、対話TUIでは今のterminalで開きます。
 
 #### 手動のfile受渡し
 
@@ -234,6 +242,7 @@ npm run typecheck
 npm test
 # 同梱pluginのreal headless Neovim integrationにはnvimが必要（開発実機: v0.12.4）
 node --experimental-strip-types --test tests/annotations.test.ts tests/pane.test.ts tests/neovim.test.ts
+python3 tests/neovim-pty.py  # 設定なしの実Pi→Neovim→Pi往復、draft保持と異常終了
 python3 tests/native-qa.py
 node tests/render-captures.mjs
 PI_UNDERSTANDING_TUI_MODE=regular python3 tests/native-qa.py
@@ -243,7 +252,7 @@ python3 tests/screenshots.py  # Firefoxの隔離profileで両modeのPNGを作り
 
 `native-qa.py`のbinary既定値は開発時のNix Pi 1.0.4です。他のbinaryでは`PI_UNDERSTANDING_BINARY=/path/to/pi`を指定します。専用config directoryとfixture repositoryを`.evidence/native-qa`に作り、個人のauth/settingsを開かず、明示ロードしたdeterministic providerだけを使います。実際の有料推論やnetwork inferenceは行いません。QA providerはpackage manifestに含めません。
 
-model/snapshotのbackend契約testsは、変更なしrepositoryのモデル生成、signature/testも含むexact照合、partial rangeの元行番号、追加固定読込、v1移行とsource-free v2保存、Git object/index/ref非変更、skillの有効登録からnative contextへの送信、proposalと現状の分離、世代cancelをdeterministic providerで確認します。注釈のrange/text/count/persistence検証、旧保存state、両modeの120/80/40列のTUI表示・toggle・draft保持・根拠移動、real isolated headless Neovimの全文・実extmark・range移動・toggle・write拒否、malformed/private file拒否、実serverへのpublic `/u nvim` command、引用外のコード・既存未保存buffer保持・injection境界も検証します。結果は`.evidence/neovim`のtext/JSONへ残します。GUI terminal launcherの実表示はこのheadless testには含みません。新しいTUIの両mode/サイズ・mouse/Tab/戻るの受入れは別のrender QAが必要です。Ghostty→mosh→herdrの実接続、物理IME、有料推論の品質・学習効果は未検証です。
+model/snapshotのbackend契約testsは、変更なしrepositoryのモデル生成、signature/testも含むexact照合、partial rangeの元行番号、追加固定読込、v1移行とsource-free v2保存、Git object/index/ref非変更、skillの有効登録からnative contextへの送信、proposalと現状の分離、世代cancelをdeterministic providerで確認します。注釈のrange/text/count/persistence検証、旧保存state、両modeの120/80/40列のTUI表示・toggle・draft保持・根拠移動、real isolated headless Neovimの全文・実extmark・range移動・toggle・write拒否、malformed/private file拒否、実serverへのpublic `/u nvim` command、引用外のコード・既存未保存buffer保持・injection境界も検証します。結果は`.evidence/neovim`のtext/JSONへ残します。terminal所有権と復帰・世代変更・二重起動拒否はpublic commandの制御テストでも検証します。`neovim-pty.py`は隔離設定とdeterministic providerで、設定なしのpublic command／pane shortcutから実Pi→Neovim→Piを往復し、固定file全文・実注釈・選択範囲・未送信draftの保持と異常終了からの復帰を確認します。結果は`.evidence/neovim-zero-config`です。GUI terminal launcherの実表示はこれらのtestには含みません。新しいTUIの両mode/サイズ・mouse/Tab/戻るの受入れは別のrender QAが必要です。Ghostty→mosh→herdrの実接続、物理IME、有料推論の品質・学習効果は未検証です。
 
 既存の検証は本番のscope、runner、pane、extensionを使います。未commit分のindex/worktree/削除/未追跡source、branchの固定・移動、AI選択の確認境界、scope isolation、引用のexact一致、path traversal、symlink、HTML escape、active branch restore、会話分離、native failure/usage/cancellation、publication/handoffをテストします。実Pi RPCでnode_modulesのないraw sourceのloaderを確認し、PTYのfullscreen/regular両方で`focus`・互換`wide`の入力所有、Ctrl+Alt+Uの往復と両方の下書き保持（120/80/160列）、Ctrl+D後のdraft再開、sessionに保存された質問の通常/学習振分け、非表示時の通常入力、日本語paste/cursor marker、ほぼ全画面の表示、番号dive・引用・一操作の全体復帰、通常chat、resize、cancel、failure、reloadを確認します。previewテストは実loopback HTTPと注入したhome-preview adapterでroute・method・停止・開始失敗・cleanup失敗・世代競合を検証し、実Tailscale登録は実行しません。
 
