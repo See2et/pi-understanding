@@ -9,10 +9,49 @@ import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext, Extension
 import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import understanding from "../src/extension.ts";
 import { collectScope, pinnedFile } from "../src/scope.ts";
-import { ENTRY, freshLearning, freshState } from "../src/learning.ts";
+import { ENTRY, freshLearning, freshState, type State } from "../src/learning.ts";
 import { UnderstandingPane } from "../src/pane.ts";
 import { initTheme, theme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import type { TUI, OverlayHandle } from "@earendil-works/pi-tui";
+
+test("/u and Alt+S open confirmed no-diff repository without inference; model, selection, evidence, quiet and proposal commands preserve boundaries", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "understanding-model-extension-"));
+  try {
+    execFileSync("git", ["init", "-q"], { cwd: root });
+    await writeFile(path.join(root, "main.ts"), "export const value = 1;\n");
+    execFileSync("git", ["add", "."], { cwd: root });
+    execFileSync("git", ["-c", "user.name=QA", "-c", "user.email=qa@example.invalid", "commit", "-qm", "fixture"], { cwd: root });
+    const commands = new Map<string, Parameters<ExtensionAPI["registerCommand"]>[1]>();
+    const shortcuts = new Map<string, Parameters<ExtensionAPI["registerShortcut"]>[1]>();
+    const events = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void>>();
+    const branch: { type: string; customType: string; data: State }[] = []; let calls = 0, confirmations = 0; const notices: string[] = [];
+    let completed: (() => void) | undefined;
+    const ctx = { cwd: root, mode: "rpc", hasUI: true, model: { id: "gpt-test", provider: "test" }, modelRegistry: { streamSimple: (_model: unknown, context: { tools: unknown[]; messages: unknown[] }) => {
+      calls++; assert.deepEqual(context.tools, []); const text = JSON.stringify(context);
+      if (calls === 2) assert.match(text, /PROPOSAL_HYPOTHESIS/);
+      const stream = createAssistantMessageEventStream();
+      const answer = { role: "assistant", api: "openai-responses", provider: "test", model: "gpt-test", content: [{ type: "text", text: JSON.stringify(calls === 1 ? { reply: "値を持つモデルです。", modelSummary: "固定値です。", claims: [{ id: "value-rule", kind: "rule", statement: "値は1です。", status: "fact", evidence: [{ path: "main.ts", ref: "worktree", start: 1, end: 1, quote: "export const value = 1;" }], relations: [], challenge: "値を予測してください。" }] } : { reply: "変更案は仮説です。" }) }], stopReason: "stop", timestamp: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } as AssistantMessage;
+      stream.push({ type: "done", reason: "stop", message: answer }); stream.end(answer); return stream;
+    } }, sessionManager: { getBranch: () => branch }, ui: { setStatus: () => {}, notify: (text: string) => notices.push(text), select: async () => "repository — コード全体", confirm: async () => { confirmations++; return true; } } } as unknown as ExtensionCommandContext;
+    understanding({ registerCommand: (name: string, definition: Parameters<ExtensionAPI["registerCommand"]>[1]) => commands.set(name, definition), registerShortcut: (name: string, definition: Parameters<ExtensionAPI["registerShortcut"]>[1]) => shortcuts.set(name, definition), registerTool: () => {}, getCommands: () => [], on: (name: string, handler: (event: unknown, context: ExtensionContext) => Promise<void>) => events.set(name, handler), appendEntry: (customType: string, data: State) => { branch.push({ type: "custom", customType, data }); const current = data.active && data.scopes[data.active]; if (current && !current.pending && current.turns.at(-1)?.role === "assistant") { completed?.(); completed = undefined; } } } as unknown as ExtensionAPI);
+    await events.get("session_start")!({}, ctx);
+    await shortcuts.get("alt+s")!.handler(ctx); assert.equal(confirmations, 1); assert.equal(calls, 0);
+    await commands.get("u")!.handler("", ctx); assert.equal(calls, 0); assert.ok(notices.some(n => n.includes("model")));
+    const reply = new Promise<void>(resolve => { completed = resolve; }); await commands.get("u")!.handler("model", ctx); await reply;
+    const state = () => branch.at(-1)!.data; const learning = () => state().scopes[state().active!]!;
+    assert.equal(learning().claims?.[0]!.id, "value-rule"); assert.equal(learning().scope.sources.length, 0, "session entry contains only snapshot reference");
+    await commands.get("u")!.handler("select value-rule", ctx); await commands.get("u")!.handler("evidence 1", ctx);
+    assert.equal(learning().evidenceView?.quote, "export const value = 1;");
+    await commands.get("u")!.handler("back", ctx); assert.equal(learning().selectedClaim, "value-rule"); assert.equal(learning().evidenceView, undefined);
+    await commands.get("u")!.handler("skip", ctx); await commands.get("u")!.handler("quiet", ctx);
+    assert.deepEqual(learning().skippedChallenges, ["value-rule"]); assert.equal(learning().questions, false); assert.equal(calls, 1);
+    const proposal = new Promise<void>(resolve => { completed = resolve; }); await commands.get("u")!.handler("proposal 値を2にする", ctx); await proposal;
+    assert.equal(learning().proposal, "値を2にする"); assert.equal(learning().claims?.[0]!.statement, "値は1です。");
+    await commands.get("u")!.handler("proposal clear", ctx); await commands.get("u")!.handler("overview", ctx);
+    assert.equal(learning().proposal, undefined); assert.equal(learning().selectedClaim, undefined); assert.equal(calls, 2);
+    await events.get("session_shutdown")!({}, ctx);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 test("production PR metadata path pins base/head without changing HEAD/index/worktree", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "understanding-pr-"));

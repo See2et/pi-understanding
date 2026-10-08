@@ -1,9 +1,11 @@
 import { pinnedFile, isWorktree } from "./scope.ts";
 import { selectedNode, addReference, type Learning } from "./learning.ts";
+import { selectedClaim, claimEvidence } from "./model.ts";
 
 /** Explicit all/ranges; otherwise show selected evidence (or a bounded first page), never live worktree content. */
 export async function referenceSnippet(learning: Learning, specification: string): Promise<string> {
-  const evidence = selectedNode(learning)?.evidence;
+  const claim = selectedClaim(learning);
+  const evidence = claim ? claimEvidence(claim) : selectedNode(learning)?.evidence;
   const match = specification.trim().match(/^(.*?)(?:\s+(base|head|index))?(?:\s+(all|\d+-\d+))?$/)!;
   const file = match[1] || evidence?.[0]?.path;
   if (!file) throw new Error("reference PATH [base|head|index] [all|START-END] またはdive後にreference");
@@ -15,6 +17,8 @@ export async function referenceSnippet(learning: Learning, specification: string
   if (match[3] === "all") { start = 1; end = lines.length; }
   else if (match[3]) { [start, end] = match[3].split("-").map(Number) as [number, number]; }
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start || end > lines.length) throw new Error("Reference range is outside the pinned file");
+  const snippet = lines.slice(start - 1, end).map((line, i) => `${start + i}: ${line}`).join("\n");
+  if (Buffer.byteLength(snippet) > 24_000) throw new Error("Reference display exceeds 24KB; specify a smaller fixed line range");
   addReference(learning, source);
-  return `${source.ref}:${source.path}:${start}-${end} sha256=${source.digest}\n${lines.slice(start - 1, end).map((line, i) => `${start + i}: ${line}`).join("\n")}\n固定snapshotのみ。全体は reference PATH [base|head|index] all`;
+  return `${source.ref}:${source.path}:${start}-${end} sha256=${source.digest}\n${snippet}\n固定snapshotのみ。全体は reference PATH [base|head|index] all`;
 }

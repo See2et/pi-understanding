@@ -1,14 +1,23 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { collectScope, repositoryIdentity, fingerprint, type ScopeRequest } from "./scope.ts";
-import { ENTRY, freshState, freshLearning, restore, LearningRunner, dive, overview, type State, type Learning, type Publication } from "./learning.ts";
-import { UnderstandingPane, terminalText, FOCUS_SHORTCUT, FOCUS_HINT, type PaneView } from "./pane.ts";
+import { ENTRY, freshState, freshLearning, restore, persistedState, loadYomiyasu, LearningRunner, dive, overview, type LearningIntent, type State, type Learning, type Publication } from "./learning.ts";
+import { selectClaim, modelBack, openClaimEvidence, skipChallenge, modelOverviewText } from "./model.ts";
+import { snapshotStorageRoot } from "./snapshot.ts";
+import { UnderstandingPane, terminalText, FOCUS_SHORTCUT, type PaneView } from "./pane.ts";
 import { openDiagram, diagramHtml } from "./diagram.ts";
 import { DiagramPreview } from "./preview.ts";
 import { referenceSnippet } from "./reference.ts";
 import { chooseTarget, targetMetadata } from "./targets.ts";
 
 export const HELP = `理解ペインは通常チャットとは別のGPT会話です。通常チャットの内容は読みません。
+/u と Alt+S — 開く（通常入力の下書き保持）。変更なしのrepositoryも理解対象です。
+/u model — モデル全体像を明示生成（概念・ルール・境界・振る舞い・理由）。問いは任意。
+/u select CLAIM_ID | evidence N | back | overview — 主張・固定根拠・戻る（推論なし）
+/u quiet | questions on|off | skip — 問いを非表示 / 選択した問いをスキップ
+/u proposal 内容 | proposal clear — これからの変更案を仮説として相談 / 仮説を解除
+/u info | storage — 固定対象とprivate local保存の情報
+/u 質問文 — 選択した主張について自由質問（全体像は変更しません）
 /understand [open|toggle|focus|close|wide] — ほぼ全画面の学習表示 / 隠して通常入力
 /understand scope — 未commit分・branch・最近のcommit・PRを一覧で選択
 /understand targets — AIに相談するための候補情報
@@ -55,7 +64,7 @@ export default function understanding(pi: ExtensionAPI): void {
     stateTransitions++;
     try { return await action(); } finally { stateTransitions--; }
   };
-  const runner = new LearningRunner();
+  const runner = new LearningRunner(() => { try { return loadYomiyasu(pi.getCommands?.() ?? []); } catch { return { issue: "ホストの有効skill一覧を取得できません。yomiyasuは未読込、学習は継続します。" }; } });
   const preview = new DiagramPreview();
   let retainedView: PaneView | undefined;
   const current = (): Learning | undefined => state.active ? state.scopes[state.active] : undefined;
@@ -66,7 +75,7 @@ export default function understanding(pi: ExtensionAPI): void {
       while (l.turns.length > 40 || l.turns.reduce((n, t) => n + t.text.length, 0) > 60_000) { l.turns.shift(); removed++; }
       if (removed) l.turns.unshift({ role: "notice", text: `保存上限のため以前の${removed}件を省略しました。`, timestamp: Date.now() });
     }
-    pi.appendEntry(ENTRY, structuredClone(state));
+    pi.appendEntry(ENTRY, persistedState(state));
   };
   const close = () => { retainedView = pane?.view() ?? retainedView; finish?.(); finish = undefined; pane = undefined; };
   const hide = () => pane?.release();
@@ -83,16 +92,38 @@ export default function understanding(pi: ExtensionAPI): void {
   const cleanup = () => transition(async () => { close(); retainedView = undefined; await detachLearning(); });
   const notify = (message: string, kind: "info" | "warning" | "error" = "info") => ctx?.ui.notify(terminalText(message), kind);
   const redraw = (partial?: string) => pane?.redraw(partial);
-  const ask = (prompt: string, intent: "dialogue" | "map" = "dialogue") => {
+  const ask = (prompt: string, intent: LearningIntent = "dialogue") => {
     if (stateTransitions) { notify("対象切替の処理中です。完了後に再実行してください。", "warning"); return; }
     const learning = current(); const context = ctx;
     if (!learning || !context) { notify("先にscopeを明示選択してください。", "warning"); return; }
+    prompt = prompt.trim();
     const navigation = prompt.match(/^dive\s+M?(\d+)$/i);
-    if (navigation || prompt === "overview") {
-      try { if (navigation) dive(learning, Number(navigation[1])); else overview(learning); pane?.navigate(); save(); redraw(); } catch (error) { notify(String(error), "error"); }
+    const claim = prompt.match(/^(?:select|claim)\s+([A-Za-z][A-Za-z0-9_-]*)$/);
+    const evidence = prompt.match(/^evidence(?:\s+(\d+))?$/);
+    if (navigation || claim || evidence || ["overview", "back", "skip", "quiet", "questions on", "questions off", "proposal clear"].includes(prompt)) {
+      try {
+        if (navigation) { dive(learning, Number(navigation[1])); learning.selectedClaim = undefined; learning.evidenceView = undefined; }
+        else if (claim) { selectClaim(learning, claim[1]!); learning.selectedPoint = undefined; }
+        else if (evidence) openClaimEvidence(learning, evidence[1] ? Number(evidence[1]) : 1);
+        else if (prompt === "back") { if (learning.selectedPoint) overview(learning); else modelBack(learning); }
+        else if (prompt === "skip") skipChallenge(learning);
+        else if (prompt === "quiet" || prompt === "questions off") learning.questions = false;
+        else if (prompt === "questions on") learning.questions = true;
+        else if (prompt === "proposal clear") learning.proposal = undefined;
+        else overview(learning);
+        pane?.navigate(); save(); redraw();
+      } catch (error) { notify(String(error), "error"); }
       return;
     }
-    if (intent === "dialogue") pane?.followDialogue(); else pane?.navigate();
+    if (prompt === "reference" || prompt.startsWith("reference ")) {
+      const ticket = generation;
+      void referenceSnippet(learning, prompt.slice(10)).then(text => { if (ticket !== generation) return; learning.turns.push({ role: "notice", text, timestamp: Date.now() }); save(); redraw(); }).catch(error => notify(String(error), "error"));
+      return;
+    }
+    if (prompt === "model") { intent = "model"; prompt = "この固定対象の概念・ルール・境界・状態と振る舞い・判断理由のモデル全体像を、関連と正確な根拠付きで生成してください。実装コードとテストを必要に応じて固定snapshotから追加取得してください。"; }
+    else if (prompt.startsWith("proposal ")) { intent = "proposal"; prompt = prompt.slice(9); }
+    if (!prompt) return;
+    if (intent === "dialogue" || intent === "proposal") pane?.followDialogue(); else pane?.navigate();
     void runner.ask(context, learning, prompt, redraw, save, intent).catch(error => { if (pane) { pane.error = String(error); redraw(); } notify(String(error), "error"); });
   };
   const open = (context: ExtensionContext, focus = true, wide = true, view: PaneView | undefined = retainedView): void => {
@@ -119,7 +150,7 @@ export default function understanding(pi: ExtensionAPI): void {
         l.stale = l.scope.fingerprint === "immutable" ? "current" : "unknown";
         if (l.pending) { l.pending = false; l.turns.push({ role: "notice", text: "前の学習呼出しは中断されています。再送は手動です。使用量は未確定です。", timestamp: Date.now() }); }
       }
-      context.ui.setStatus("understanding", `理解: ${FOCUS_HINT}`);
+      context.ui.setStatus("understanding", "理解: /u · Alt+S");
     } catch { state = freshState(""); }
   });
   pi.on("session_start", async (_event, context) => { await rebuild(context); });
@@ -174,8 +205,21 @@ export default function understanding(pi: ExtensionAPI): void {
       else open(context, true);
     },
   });
-  pi.registerCommand("understand", {
-    description: "固定スコープの独立学習 / scope・map・focus・refresh・handoff・diagram",
+  pi.registerShortcut("alt+s", {
+    description: "モデル理解を開く / 通常入力へ（下書き保持）",
+    handler: async context => {
+      ctx = context;
+      try {
+        if (!current()) {
+          const ticket = generation; const request = await selectRequest(context);
+          if (!request || ticket !== generation || !await applyScope(request, context, true)) return;
+        }
+        if (pane?.handle?.isFocused()) pane.release(); else open(context, true);
+      } catch (error) { notify(String(error), "error"); }
+    },
+  });
+  const commandDefinition: Parameters<ExtensionAPI["registerCommand"]>[1] = {
+    description: "固定対象のモデル理解 / model・select・evidence・proposal・handoff（変更不要）",
     handler: async (args, context) => {
       ctx = context;
       const command = args.trim();
@@ -194,6 +238,7 @@ export default function understanding(pi: ExtensionAPI): void {
             if (!await applyScope(request, context, true)) return;
           }
           open(context);
+          if (!current()?.claims?.length) notify(modelOverviewText(current()!));
           return;
         }
         if (command === "scopes") {
@@ -215,7 +260,11 @@ export default function understanding(pi: ExtensionAPI): void {
         if (stateTransitions) throw new Error("対象切替の処理中です。完了後に再実行してください。");
         const l = current(); if (!l) throw new Error("先にscopeを明示選択してください。");
         if (command === "check") { const now = await fingerprint(l.scope.root, l.scope.request); if (ticket !== generation) return; l.stale = now === l.scope.fingerprint ? "current" : "stale"; save(); redraw(); notify(`根拠の状態: ${l.stale}。PR/commitは固定履歴です。PR先端の更新はrefreshのみ。`); }
-        else if (command === "map") { open(context); ask("1-3行の概要、3-5段階の利用者フロー、重要な5-7点を目安に、段階の理由と重要性の理由、契約・失敗・テスト・正確な根拠を含むマップを作成してください。理解質問は不要です。", "map"); }
+        else if (command === "model") { open(context); ask("model"); }
+        else if (command === "info") { notify(JSON.stringify({ request: l.scope.request, id: l.scope.id, base: l.scope.base, head: l.scope.head, snapshot: l.scope.snapshot, capturedAt: l.scope.capturedAt, stale: l.stale, proposal: l.proposal, localSnapshot: l.scope.localSnapshot }, null, 2)); }
+        else if (command === "storage") { notify(`Private local snapshots: ${snapshotStorageRoot()}\n保存時は本文をsessionへ複製せず参照を記録します。自動削除はしません。手動削除すると保存済みscopeの追加根拠取得はできなくなります。sessionには会話と引用が残ります。`); }
+        else if (/^(?:select|claim)\s+/.test(command) || /^evidence(?:\s+\d+)?$/.test(command) || ["back", "skip", "quiet", "proposal clear"].includes(command) || command.startsWith("proposal ")) { open(context); ask(command); }
+        else if (command === "map") { open(context); ask("1-3行の概要、3-5段階の利用者フロー、重要な5-7点を目安に、段階の理由と重要性の理由、契約・失敗・テスト・正確な根拠を含む旧互換マップを作成してください。理解質問は不要です。", "map"); }
         else if (command.startsWith("ask ")) { open(context); ask(command.slice(4)); }
         else if (/^dive\s+M?\d+$/i.test(command) || command === "overview") { ask(command); open(context); }
         else if (command.startsWith("focus ")) { l.focus = command.slice(6).slice(0, 2000); save(); redraw(); }
@@ -223,7 +272,7 @@ export default function understanding(pi: ExtensionAPI): void {
           const text = await referenceSnippet(l, command.slice(10));
           if (ticket !== generation) return;
           l.turns.push({ role: "notice", text, timestamp: Date.now() }); save(); redraw(); notify(text.split("\n")[0]!);
-        } else if (command === "questions on" || command === "questions off") { l.questions = command.endsWith("on"); save(); notify(`milestoneの任意理解確認: ${l.questions ? "on" : "off"}`); }
+        } else if (command === "questions on" || command === "questions off") { l.questions = command.endsWith("on"); save(); redraw(); notify(`任意理解確認: ${l.questions ? "on" : "off"}`); }
         else if (command === "reset") { if (!context.hasUI || !await context.ui.confirm("学習会話とマップを消去しますか？", "固定スコープと根拠は保持します。")) return; if (ticket !== generation) return; await transition(async () => { const boundary = generation + 1; await detachLearning(); if (boundary !== generation) return; state.scopes[l.scope.id] = freshLearning(l.scope); save(); redraw(); }); }
         else if (command === "forget") { if (!context.hasUI || !await context.ui.confirm("現在の学習スコープを削除しますか？", l.scope.id)) return; if (ticket !== generation) return; await transition(async () => { const boundary = generation + 1; await detachLearning(); if (boundary !== generation) return; delete state.scopes[l.scope.id]; state.active = undefined; save(); close(); }); }
         else if (command === "diagram") { notify(await openDiagram(l)); }
@@ -237,10 +286,12 @@ export default function understanding(pi: ExtensionAPI): void {
           const text = await context.ui.editor("実装AIへ渡す内容（学習会話は自動添付しません）", `学習スコープ ${l.scope.id}\n${l.scope.root}\nbase ${l.scope.base}\nhead ${l.scope.head}\nsnapshot ${l.scope.snapshot}\n焦点: ${l.focus}\n\n実装AIへの依頼:\n`);
           if (!text?.trim() || ticket !== generation) return;
           if (await context.ui.confirm("以下を通常チャットへ送信しますか？", text) && ticket === generation) pi.sendUserMessage(text, { deliverAs: "followUp" });
-        } else throw new Error("不明な操作です。/understand help を参照してください。");
+        } else { open(context); ask(command); }
       } catch (error) { notify(String(error), "error"); }
     },
-  });
+  };
+  pi.registerCommand("understand", commandDefinition);
+  pi.registerCommand("u", commandDefinition);
   pi.registerTool({
     name: "understanding_targets", label: "理解対象の候補",
     description: "Discover current branch, uncommitted change metadata, local branches and recent commits so the user need not remember refs. PR network listing only with include_pr=true explicitly requested by user. No learner dialogue. Ask user about ambiguous intent; use select_understanding_scope only after discussion.",
