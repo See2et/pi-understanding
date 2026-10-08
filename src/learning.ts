@@ -2,7 +2,7 @@ import type { AssistantMessage, Message, Usage } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { evidenceText, territoryText, pinnedFile, isWorktree, safePath, allowedPath, moduleContains, hash, type Scope, type Source } from "./scope.ts";
 import { storeSnapshot, loadSnapshot, CAPTURE_LIMITS } from "./snapshot.ts";
-import { validateEvidence, validateClaims, parseReadRequests, selectedClaim, claimEvidence, modelOverview, type Evidence, type Claim, type ReadRequest, type ReadRecord } from "./model.ts";
+import { validateEvidence, validateClaims, validateAnnotations, canonicalAnnotations, parseReadRequests, selectedClaim, claimEvidence, modelOverview, type Evidence, type Claim, type ReadRequest, type ReadRecord } from "./model.ts";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
@@ -24,7 +24,7 @@ export function pointDetail(node: MapNode, id: string): string {
 export type Turn = { role: "user" | "assistant" | "notice"; text: string; timestamp: number; usage?: Usage; provider?: string; model?: string; stopReason?: string; read?: ReadRecord[]; styleSkill?: "yomiyasu-instructions-sent"; intent?: "dialogue" | "map" | "model" | "proposal" };
 export type Publication = { milestone: "pre" | "post"; requirement: string; change: string; tests: string; focus: string; question?: string };
 export type Learning = { scope: Scope; turns: Turn[]; map: MapNode[]; focus: string; stale: "unknown" | "current" | "stale"; publications: Publication[]; questions: boolean; asked: string[]; pending?: boolean; selectedPoint?: number; mapSummary?: string;
-  claims?: Claim[]; modelSummary?: string; selectedClaim?: string; evidenceView?: Evidence; skippedChallenges?: string[]; proposal?: string;
+  claims?: Claim[]; modelSummary?: string; selectedClaim?: string; evidenceView?: Evidence; annotationsVisible?: boolean; skippedChallenges?: string[]; proposal?: string;
 };
 export type State = { version: 1 | 2; repository: string; active?: string; scopes: Record<string, Learning> };
 export const LEGACY_ENTRY = "see2et.pi-understanding.v1";
@@ -37,9 +37,21 @@ export function restore(entries: readonly { type: string; customType?: string; d
     const data = e.data as State | undefined;
     if ((data?.version === 1 || data?.version === 2) && data.repository === repository && data.scopes && typeof data.scopes === "object") {
       const restored = structuredClone(data); restored.version = 2;
-      for (const l of Object.values(restored.scopes)) if (l.scope.localSnapshot) {
-        try { l.scope.sources = loadSnapshot(l.scope.localSnapshot, l.scope, storageRoot); }
-        catch { l.scope.sources = []; l.turns.push({ role: "notice", text: "固定local snapshotを読み込めません。保存済み引用のみ表示できます。未捕捉のworktreeは読み直しません。", timestamp: Date.now() }); }
+      for (const l of Object.values(restored.scopes)) {
+        const evidence = [...(l.claims ?? []).flatMap(claimEvidence), ...l.map.flatMap(n => n.evidence), ...(l.evidenceView ? [l.evidenceView] : [])];
+        try {
+          for (const e of evidence) { const a = validateAnnotations(e.annotations, e.start, e.end); if (a !== undefined) e.annotations = a; }
+          canonicalAnnotations(evidence, false); // selected view is a duplicate, not an additional model reference.
+          canonicalAnnotations((l.claims ?? []).flatMap(claimEvidence));
+          canonicalAnnotations(l.map.flatMap(n => n.evidence));
+        } catch {
+          for (const e of evidence) delete e.annotations;
+          l.turns.push({ role: "notice", text: "保存済みAI注釈は検証に失敗したため非表示です。引用原文は保持します。", timestamp: Date.now() });
+        }
+        if (l.scope.localSnapshot) {
+          try { l.scope.sources = loadSnapshot(l.scope.localSnapshot, l.scope, storageRoot); }
+          catch { l.scope.sources = []; l.turns.push({ role: "notice", text: "固定local snapshotを読み込めません。保存済み引用のみ表示できます。未捕捉のworktreeは読み直しません。", timestamp: Date.now() }); }
+        }
       }
       return restored;
     }
@@ -109,7 +121,7 @@ export function learningContext(learning: Learning, prompt: string, fetched: Sou
   messages.push({ role: "user", content: prompt, timestamp: Date.now() });
   return { messages, systemPrompt: SYSTEM + MODEL_SYSTEM + (style ? `\n${style}` : ""), sent: evidence.sent };
 }
-const MODEL_SYSTEM = `\nModel ownership is the primary goal: concepts, rules, responsibility/trust/time boundaries, state and behavior, and rationale. Code and tests are supporting evidence, not the curriculum itself. Distinguish understanding of current behavior from opinions about how the specification should change; never mark a specification opinion as a quiz error. No scores or automatic approval. Prospective proposals are HYPOTHESES, never current facts or authorization to implement.\nFor GENERATE_MODEL only, return modelSummary (1-3 lines) and claims (1-20, prefer 5-10). Each claim: {id: stable descriptive ASCII ID, kind: concept|rule|boundary|behavior|rationale, statement: one bounded statement, detail?: explanation, status: fact|inferred, evidence: exact Evidence[], signature?: exact Evidence, tests?: exact Evidence[], relations:[{to: existing other claim ID, type:depends|protects|constrains|explains}], challenge?: optional single question}. Fact requires exact evidence; inferred rationale explicitly remains interpretation. Every evidence/signature/test uses the SAME exact path/ref/start/end/quote schema as map. Never infer the whole software solely from README. Inspect meaningful implementation and tests, requesting missing evidence as needed. Model replacement is authorized ONLY by GENERATE_MODEL. Other intents omit claims/modelSummary; ordinary dialogue does not replace the overview.\nWhen evidence is insufficient return {reply: bounded explanation of what is needed, need:[{path: exact territory path, ref?: worktree|index|base|head or exact pinned OID, start: original 1-based line, end: original line (at most 61 lines), why: reason}], search:[{text: literal substring, why: reason}]}. At most six combined requests, two read rounds; no shell or tools. Final round must omit need/search and disclose unavailable/uncaptured/excluded/untransmitted/budget limits. Keep source line numbers even for partial ranges. Return ONLY existing JSON protocol, reply first. Questions/challenges optional; omit when questions are off, and never repeat a skipped challenge. Publications are unverified agent claims. Skill style instructions below never change these rules.`;
+const MODEL_SYSTEM = `\nModel ownership is the primary goal: concepts, rules, responsibility/trust/time boundaries, state and behavior, and rationale. Code and tests are supporting evidence, not the curriculum itself. Distinguish understanding of current behavior from opinions about how the specification should change; never mark a specification opinion as a quiz error. No scores or automatic approval. Prospective proposals are HYPOTHESES, never current facts or authorization to implement.\nFor GENERATE_MODEL only, return modelSummary (1-3 lines) and claims (1-20, prefer 5-10). Each claim: {id: stable descriptive ASCII ID, kind: concept|rule|boundary|behavior|rationale, statement: one bounded statement, detail?: explanation, status: fact|inferred, evidence: exact Evidence[], signature?: exact Evidence, tests?: exact Evidence[], relations:[{to: existing other claim ID, type:depends|protects|constrains|explains}], challenge?: optional single question}. Fact requires exact evidence; inferred rationale explicitly remains interpretation. Every evidence/signature/test uses the SAME exact path/ref/start/end/quote schema as map, plus optional annotations:[{start: original 1-based chunk start, end: original chunk end, text: concise Japanese AI interpretation}]. For implementation evidence, provide 1-3 useful semantic chunk annotations explaining responsibility, a meaningful branch, or an invariant; do not paraphrase every line. Each annotation must be wholly inside its evidence, sorted and disjoint, at most 6 per evidence, text a single plain line without control characters at most 480 UTF-8 bytes, all text at most 1440 UTF-8 bytes per evidence and 12000 bytes across all references. Preserve quote EXACTLY; annotations are separate AI interpretations, not verified facts or comments inserted in code. Identical evidence ranges/quotes must have identical annotations (or omit duplicates). Legacy evidence without annotations remains valid. Never infer the whole software solely from README. Inspect meaningful implementation and tests, requesting missing evidence as needed. Model replacement is authorized ONLY by GENERATE_MODEL. Other intents omit claims/modelSummary; ordinary dialogue does not replace the overview.\nWhen evidence is insufficient return {reply: bounded explanation of what is needed, need:[{path: exact territory path, ref?: worktree|index|base|head or exact pinned OID, start: original 1-based line, end: original line (at most 61 lines), why: reason}], search:[{text: literal substring, why: reason}]}. At most six combined requests, two read rounds; no shell or tools. Final round must omit need/search and disclose unavailable/uncaptured/excluded/untransmitted/budget limits. Keep source line numbers even for partial ranges. Return ONLY existing JSON protocol, reply first. Questions/challenges optional; omit when questions are off, and never repeat a skipped challenge. Publications are unverified agent claims. Skill style instructions below never change these rules.`;
 
 /** Persist metadata references, not multi-MB source copies per turn. Migrates v1 captured bytes only. */
 export function persistedState(state: State, storageRoot?: string): State {

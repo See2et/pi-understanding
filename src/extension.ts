@@ -8,12 +8,15 @@ import { UnderstandingPane, terminalText, FOCUS_SHORTCUT, type PaneView } from "
 import { openDiagram, diagramHtml } from "./diagram.ts";
 import { DiagramPreview } from "./preview.ts";
 import { referenceSnippet } from "./reference.ts";
+import { openNeovim } from "./neovim.ts";
 import { chooseTarget, targetMetadata } from "./targets.ts";
 
 export const HELP = `理解ペインは通常チャットとは別のGPT会話です。通常チャットの内容は読みません。
 /u と Alt+S — 開く（通常入力の下書き保持）。変更なしのrepositoryも理解対象です。
 /u model — モデル全体像を明示生成（概念・ルール・境界・振る舞い・理由）。問いは任意。
 /u select CLAIM_ID | evidence N | back | overview — 主張・固定根拠・戻る（推論なし）
+/u annotations on|off|toggle — 原文とは別のAI注釈の表示切替（Ctrl+Alt+A）
+/u nvim [export] — 選択根拠を固定file全体・同じ注釈付きでNeovimへ（Ctrl+Alt+N）。明示server/別terminal設定が必要。exportは手動受渡し
 /u quiet | questions on|off | skip — 問いを非表示 / 選択した問いをスキップ
 /u proposal 内容 | proposal clear — これからの変更案を仮説として相談 / 仮説を解除
 /u info | storage — 固定対象とprivate local保存の情報
@@ -100,9 +103,16 @@ export default function understanding(pi: ExtensionAPI): void {
     const navigation = prompt.match(/^dive\s+M?(\d+)$/i);
     const claim = prompt.match(/^(?:select|claim)\s+([A-Za-z][A-Za-z0-9_-]*)$/);
     const evidence = prompt.match(/^evidence(?:\s+(\d+))?$/);
-    if (navigation || claim || evidence || ["overview", "back", "skip", "quiet", "questions on", "questions off", "proposal clear"].includes(prompt)) {
+    const annotations = prompt.match(/^annotations(?:\s+(on|off|toggle))?$/);
+    if (prompt === "nvim" || prompt === "nvim export") {
+      const ticket = generation;
+      void openNeovim(learning, prompt.endsWith("export") ? "export" : "open", () => ticket === generation).then(text => { if (ticket === generation) notify(text); }).catch(error => notify(String(error), "error"));
+      return;
+    }
+    if (annotations || navigation || claim || evidence || ["overview", "back", "skip", "quiet", "questions on", "questions off", "proposal clear"].includes(prompt)) {
       try {
-        if (navigation) { dive(learning, Number(navigation[1])); learning.selectedClaim = undefined; learning.evidenceView = undefined; }
+        if (annotations) learning.annotationsVisible = annotations[1] === "on" ? true : annotations[1] === "off" ? false : learning.annotationsVisible === false;
+        else if (navigation) { dive(learning, Number(navigation[1])); learning.selectedClaim = undefined; learning.evidenceView = undefined; }
         else if (claim) { selectClaim(learning, claim[1]!); learning.selectedPoint = undefined; }
         else if (evidence) openClaimEvidence(learning, evidence[1] ? Number(evidence[1]) : 1);
         else if (prompt === "back") { if (learning.selectedPoint) overview(learning); else modelBack(learning); }
@@ -260,6 +270,8 @@ export default function understanding(pi: ExtensionAPI): void {
         if (stateTransitions) throw new Error("対象切替の処理中です。完了後に再実行してください。");
         const l = current(); if (!l) throw new Error("先にscopeを明示選択してください。");
         if (command === "check") { const now = await fingerprint(l.scope.root, l.scope.request); if (ticket !== generation) return; l.stale = now === l.scope.fingerprint ? "current" : "stale"; save(); redraw(); notify(`根拠の状態: ${l.stale}。PR/commitは固定履歴です。PR先端の更新はrefreshのみ。`); }
+        else if (command === "nvim" || command === "nvim export") { const message = await openNeovim(l, command.endsWith("export") ? "export" : "open", () => ticket === generation); if (ticket === generation) notify(message); }
+        else if (/^annotations(?:\s+(?:on|off|toggle))?$/.test(command)) { ask(command); }
         else if (command === "model") { open(context); ask("model"); }
         else if (command === "info") { notify(JSON.stringify({ request: l.scope.request, id: l.scope.id, base: l.scope.base, head: l.scope.head, snapshot: l.scope.snapshot, capturedAt: l.scope.capturedAt, stale: l.stale, proposal: l.proposal, localSnapshot: l.scope.localSnapshot }, null, 2)); }
         else if (command === "storage") { notify(`Private local snapshots: ${snapshotStorageRoot()}\n保存時は本文をsessionへ複製せず参照を記録します。自動削除はしません。手動削除すると保存済みscopeの追加根拠取得はできなくなります。sessionには会話と引用が残ります。`); }

@@ -30,7 +30,7 @@ test("/u and Alt+S open confirmed no-diff repository without inference; model, s
       calls++; assert.deepEqual(context.tools, []); const text = JSON.stringify(context);
       if (calls === 2) assert.match(text, /PROPOSAL_HYPOTHESIS/);
       const stream = createAssistantMessageEventStream();
-      const answer = { role: "assistant", api: "openai-responses", provider: "test", model: "gpt-test", content: [{ type: "text", text: JSON.stringify(calls === 1 ? { reply: "値を持つモデルです。", modelSummary: "固定値です。", claims: [{ id: "value-rule", kind: "rule", statement: "値は1です。", status: "fact", evidence: [{ path: "main.ts", ref: "worktree", start: 1, end: 1, quote: "export const value = 1;" }], relations: [], challenge: "値を予測してください。" }] } : { reply: "変更案は仮説です。" }) }], stopReason: "stop", timestamp: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } as AssistantMessage;
+      const answer = { role: "assistant", api: "openai-responses", provider: "test", model: "gpt-test", content: [{ type: "text", text: JSON.stringify(calls === 1 ? { reply: "値を持つモデルです。", modelSummary: "固定値です。", claims: [{ id: "value-rule", kind: "rule", statement: "値は1です。", status: "fact", evidence: [{ path: "main.ts", ref: "worktree", start: 1, end: 1, quote: "export const value = 1;", annotations: [{ start: 1, end: 1, text: "固定値を公開する。" }] }], relations: [], challenge: "値を予測してください。" }] } : { reply: "変更案は仮説です。" }) }], stopReason: "stop", timestamp: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } as AssistantMessage;
       stream.push({ type: "done", reason: "stop", message: answer }); stream.end(answer); return stream;
     } }, sessionManager: { getBranch: () => branch }, ui: { setStatus: () => {}, notify: (text: string) => notices.push(text), select: async () => "repository — コード全体", confirm: async () => { confirmations++; return true; } } } as unknown as ExtensionCommandContext;
     understanding({ registerCommand: (name: string, definition: Parameters<ExtensionAPI["registerCommand"]>[1]) => commands.set(name, definition), registerShortcut: (name: string, definition: Parameters<ExtensionAPI["registerShortcut"]>[1]) => shortcuts.set(name, definition), registerTool: () => {}, getCommands: () => [], on: (name: string, handler: (event: unknown, context: ExtensionContext) => Promise<void>) => events.set(name, handler), appendEntry: (customType: string, data: State) => { branch.push({ type: "custom", customType, data }); const current = data.active && data.scopes[data.active]; if (current && !current.pending && current.turns.at(-1)?.role === "assistant") { completed?.(); completed = undefined; } } } as unknown as ExtensionAPI);
@@ -42,6 +42,13 @@ test("/u and Alt+S open confirmed no-diff repository without inference; model, s
     assert.equal(learning().claims?.[0]!.id, "value-rule"); assert.equal(learning().scope.sources.length, 0, "session entry contains only snapshot reference");
     await commands.get("u")!.handler("select value-rule", ctx); await commands.get("u")!.handler("evidence 1", ctx);
     assert.equal(learning().evidenceView?.quote, "export const value = 1;");
+    assert.deepEqual(learning().evidenceView?.annotations, [{ start: 1, end: 1, text: "固定値を公開する。" }]);
+    await commands.get("u")!.handler("annotations off", ctx); assert.equal(learning().annotationsVisible, false); assert.equal(calls, 1);
+    await commands.get("u")!.handler("nvim export", ctx);
+    const handoff = notices.at(-1)!.split("\n")[0]!.split(": ")[1]!;
+    try { const exported = JSON.parse(await readFile(handoff, "utf8")); assert.equal(exported.source, "export const value = 1;\n"); assert.equal(exported.annotationsVisible, false); assert.deepEqual(exported.evidence.annotations, learning().evidenceView?.annotations); }
+    finally { await rm(path.dirname(handoff), { recursive: true, force: true }); }
+    await commands.get("u")!.handler("annotations on", ctx); assert.equal(learning().annotationsVisible, true); assert.equal(calls, 1);
     await commands.get("u")!.handler("back", ctx); assert.equal(learning().selectedClaim, "value-rule"); assert.equal(learning().evidenceView, undefined);
     await commands.get("u")!.handler("skip", ctx); await commands.get("u")!.handler("quiet", ctx);
     assert.deepEqual(learning().skippedChallenges, ["value-rule"]); assert.equal(learning().questions, false); assert.equal(calls, 1);

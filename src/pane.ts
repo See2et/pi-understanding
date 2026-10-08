@@ -25,7 +25,7 @@ type Box = { top: number; bottom: number; left: number; right: number };
 const KINDS = [["concept", "概念"], ["rule", "ルール"], ["boundary", "境界"], ["behavior", "振る舞い"], ["rationale", "理由"]] as const;
 const RELATIONS: Record<Claim["relations"][number]["type"], string> = { depends: "依存", protects: "保護", constrains: "制約", explains: "理由づけ" };
 // Pure navigation must not pull the dialogue to its latest line.
-const NAVIGATION = /^(?:dive\s+M?\d+|overview|back|skip|quiet|questions\s+(?:on|off)|proposal\s+clear|(?:select|claim)\s+\S+|evidence(?:\s+\d+)?)$/i;
+const NAVIGATION = /^(?:nvim(?:\s+export)?|annotations(?:\s+(?:on|off|toggle))?|dive\s+M?\d+|overview|back|skip|quiet|questions\s+(?:on|off)|proposal\s+clear|(?:select|claim)\s+\S+|evidence(?:\s+\d+)?)$/i;
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 const fit = (text: string, width: number) => truncateToWidth(text, Math.max(0, width), "…", true);
 const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
@@ -161,6 +161,8 @@ export class UnderstandingPane implements Component, Focusable {
     else if (matchesKey(data, "ctrl+c")) { this.actions.cancel(); this.refresh(); }
     else if (matchesKey(data, "ctrl+d")) this.actions.close();
     else if (matchesKey(data, "ctrl+o")) this.leave("overview");
+    else if (matchesKey(data, "ctrl+alt+a")) this.command("annotations toggle");
+    else if (matchesKey(data, "ctrl+alt+n")) this.command("nvim");
     // Dialogue history uses Pi's transcript vocabulary and honours remapped keybindings.
     else if (is("tui.altScreen.pageUp", "tui.editor.pageUp")) this.scrollChat(-this.page());
     else if (is("tui.altScreen.pageDown", "tui.editor.pageDown")) this.scrollChat(this.page());
@@ -342,8 +344,13 @@ export class UnderstandingPane implements Component, Focusable {
       text("固定snapshotの正確な引用（照合済み）", "muted");
       text("引用は主張の正しさを証明しません", "muted");
       raw("");
+      if (shown.annotations?.length) text(`AI注釈: ${learning.annotationsVisible === false ? "非表示" : "解釈（未保証）"} · Ctrl+Alt+A 切替`, "warning");
       const digits = String(shown.end).length;
       shown.quote.split("\n").forEach((line, i) => {
+        if (learning.annotationsVisible !== false) for (const a of shown.annotations ?? []) if (a.start === shown.start + i) {
+          const wrapped = wrapTextWithAnsi(clean(`AI解釈 L${a.start}-${a.end} · ${a.text}`), width);
+          wrapped.slice(0, 3).forEach((part, j) => raw(th.fg("warning", j === 2 && wrapped.length > 3 ? truncateToWidth(`${part}…`, width, "…") : part)));
+        }
         hardWrap(clean(line).replace(/\t/g, "  "), Math.max(4, width - digits - 3)).forEach((part, j) => raw(th.fg("dim", j ? `${" ".repeat(digits)} ┆ ` : `${String(shown.start + i).padStart(digits)} │ `) + part));
       });
       return { kind: "evidence", key: `evidence:${claim?.id ?? ""}:${index + 1}`, crumb: `全体 › ${claim?.id ?? "主張"} › ${label} ${position}`, pinned: [], lines, items, destination: `${claim?.id ?? "主張"}（${label}${position ? ` ${position}` : ""} を表示中）` };
@@ -638,6 +645,7 @@ export class UnderstandingPane implements Component, Focusable {
       running ? "Ctrl+C 中止" : "",
       draft.trim() ? "Enter 送信" : reading ? "Enter/← 戻る" : this.cursorKey?.startsWith("action:") ? "Enter 実行" : view.items.length ? "Enter 開く" : "",
       view.kind === "evidence" ? "Tab 次の根拠 · ↑↓ 行" : view.kind === "point" ? "Tab 次の点 · ↑↓ 行" : long ? (view.items.length ? "↑↓ 読む · Tab 選択" : "↑↓ 読む") : view.items.length ? "↑↓/Tab 選択" : "",
+      view.kind === "evidence" ? "Ctrl+Alt+N Neovim" : "",
       view.kind === "claim" && !draft ? "← 戻る" : "",
       view.kind !== "overview" ? "Ctrl+O 全体" : "",
       "Alt+S 閉じる",

@@ -39,9 +39,71 @@ Nix側のrevision更新はルートflake.lockで行います。Piの認証・設
 
 学習表示では↑↓でモデル本文を読み、Shift+↑↓でモデルのページを送ります。Tab／Shift+Tabで主張や操作を選び、入力欄が空ならEnterで開きます。本文が長い主張や操作のない主張も、途中を含めて最後まで読めます。←で根拠から主張へ、Ctrl+Oで全体へ戻ります。PgUp／PgDnは会話側だけをスクロールします。fullscreenのホイールはポインター下のモデル・会話をそれぞれスクロールし、regularのホイールはターミナル本来のスクロールバックに任せます。通常入力と学習入力の未送信draftはAlt+Sで切り替えても保持されます。
 
+### コード注釈とNeovim
+
+新しい`model`生成では、責任・意味のある分岐・不変条件を短いAI注釈として根拠のコードchunkに付けます。原文の`quote`へコメントを挿入するのではなく、元の行範囲を持つ別データです。引用の実在照合と注釈の意味の正しさは別で、表示にも「AI解釈」と明記します。旧モデルに注釈を捏造しません。既存モデルへ追加したい場合は`/u model`で明示的に作り直してください。
+
+根拠表示のCtrl+Alt+A、または`/u annotations on|off|toggle`で注釈を切り替えます。原文の全行と元の行番号は残り、↑↓・Shift+↑↓で読めます。狭いペインでは各注釈を最大3表示行に省略し、全文はNeovimで読めます。Tab／Shift+Tabは従来どおりsignature→tests→evidenceを巡回します。Ctrl+Alt+Nは入力中のdraftを送信せず、選択根拠をNeovimへ渡す明示操作です。`/u nvim`も同じ操作です。
+
+Neovimには選択した根拠の**固定file全体**と同じ注釈を渡すため、根拠外の前後のコードも読めます。学習会話は渡しません。`pinnedFile`で全体を取得できない旧snapshot・未捕捉file・削除済みsnapshotでは失敗し、live worktreeへfallbackしません。注釈の自動追記、同期、Neovim側のAI呼出しはありません。
+
+#### 既存Neovim serverへ開く
+
+Neovim 0.10以降の標準Lua APIだけを使う薄いpluginを`lua/`と`plugin/`に同梱しています。外部pluginのinstallやglobal configの編集は不要です。下記の`PACKAGE`はこのcheckoutまたはPiが読み込むraw package directoryです。
+
+別terminalでNeovimを明示起動します。pluginのruntimepath追加はその実行だけに適用します。
+
+```sh
+PACKAGE="$HOME/ghq/github.com/See2et/pi-understanding"
+# 私有directory内のsocketを使用。既存socketは再利用/上書きしないでください。
+SOCKET_DIR=$(mktemp -d)
+PI_UNDERSTANDING_NVIM_PACKAGE="$PACKAGE" nvim --listen "$SOCKET_DIR/nvim.sock" \
+  --cmd 'lua vim.opt.runtimepath:prepend(vim.env.PI_UNDERSTANDING_NVIM_PACKAGE)'
+```
+
+Piを起動する別terminalには、上で出力/確認したsocketのabsolute pathを明示します。
+
+```sh
+export PI_UNDERSTANDING_NVIM_SERVER=/absolute/private-directory/nvim.sock
+pi -e "$HOME/ghq/github.com/See2et/pi-understanding"
+```
+
+Piで`/u select ID`、`/u evidence N`、`/u nvim`を実行します。すでに動いているNeovimにも、`:lua vim.opt.runtimepath:prepend('/absolute/package/path')`でそのsessionだけpluginを読込めます。`:echo v:servername`でserver addressを確認してください。server側にpluginがない、接続できない、`nvim`がPATHにない場合は明示エラーです。`PI_UNDERSTANDING_NVIM_BINARY`で別の実行binaryを指定できます。serverへの操作は新しいsplitを作り、現在のbuffer・未保存draftを置き換えたり保存したりしません。
+
+#### 新しい別terminalで起動する
+
+PiのterminalをNeovimに渡すことはしません。ユーザーがすでに利用しているterminal launcherのargvをJSON配列で指定した場合だけ、別terminalで新しいNeovimを起動します。shell commandではありません。server設定がある場合はserverが優先します。
+
+```sh
+# 例: インストール済みxtermを使う場合。extensionはinstallしません。
+export PI_UNDERSTANDING_NVIM_TERMINAL='["xterm","-e"]'
+# 例: インストール済みkittyの場合は ["kitty","--"]
+pi -e "$HOME/ghq/github.com/See2et/pi-understanding"
+```
+
+新しいNeovimは`-u NONE -i NONE -n`で起動し、通常の初期化が完了した後の`-c` commandで、その実行だけ同梱Luaを読み、固定根拠bufferを選択します。ユーザーconfig、swap、shadaは使いません。Piへの成功通知はlauncherの開始までを確認します。開始後のterminalやNeovimのエラーは別terminalで確認してください。visible terminalを作るlauncherを指定する責任はユーザー側にあります。未設定では不可視のinteractive Neovimを起動せず、設定方法と手動exportを案内します。
+
+#### 手動のfile受渡し
+
+`/u nvim export`はNeovimを起動せずprivate JSONのabsolute pathとplugin rootを通知します。Neovimで一度runtimepathを追加した後、次のように読みます。`UnderstandingOpen` commandを使う場合はplugin fileもその実行だけ読込みます。
+
+```vim
+:lua vim.opt.runtimepath:prepend('/absolute/package/path')
+:runtime plugin/pi_understanding.lua
+:UnderstandingOpen /absolute/private-directory/evidence.json
+" または、引数をLua stringとして渡すAPI
+:lua require('pi_understanding').open('/absolute/private-directory/evidence.json')
+```
+
+bufferはsource fileそのものではない`nofile` scratchです。readonly／nonmodifiableで、通常のwrite・appendも拒否します。元の行番号、選択範囲のhighlightと別のvirtual linesにAI注釈を表示します。`ga`で注釈toggle、`]a`／`[a`でannotated chunkへ、`]e`／`[e`で選択根拠の先頭・末尾へ移動します。`gi`でpath/ref、scope、repository、snapshot、全digestを確認できます。ほかのfileの注釈や会話の取得はしません。
+
+受渡しfileはOS temporary directoryの専用0700 directory内に0600で作り、1fileのsourceは既存captureと同じ1MB、JSON全体は6.2MBを上限にします。全sourceのSHA-256、引用のexact一致、元の範囲、注釈の個数・text・範囲とfileのowner／permissionをNeovimでも検証してから開きます。注釈textは実行しません。shell展開や受渡しデータのLua評価もありません。
+
+このdirectoryにはprivate source全文が残ります。自動削除は行わないので、Neovimで開き終えた不要な受渡しは通知された専用directoryごと手動削除してください。socket directoryもserverを終了してから手動削除できます。session exportとは別のlocal copyであり、共有するとsource・注釈・identityが共有されます。readonlyとwrite拒否はOS sandboxではありません。自分でoptions/autocmdを無効化したり任意Luaを実行するユーザーを制限するものではなく、既存serverのユーザーpluginの挙動も隔離しません。
+
 ### モデルのbackend契約
 
-モデル全体像は`claims`と`modelSummary`で保持します。主張は安定ID、単一のstatement、任意のdetail、種類（concept/rule/boundary/behavior/rationale）、現状の主張`fact`か解釈`inferred`、exact根拠、実在する他の主張への関係を持ちます。signatureとtestsも同じexact引用検証を通します。引用の実在は検証しますが、モデルの意味や理由の解釈が正しいという保証ではありません。`model`だけがモデル全体像を置き換え、自由質問・proposal・移動は置き換えません。旧M番号mapは旧API/diagram互換で残り、新しいモデルとして再解釈しません。
+モデル全体像は`claims`と`modelSummary`で保持します。主張は安定ID、単一のstatement、任意のdetail、種類（concept/rule/boundary/behavior/rationale）、現状の主張`fact`か解釈`inferred`、exact根拠、実在する他の主張への関係を持ちます。signatureとtestsも同じexact引用検証を通します。各根拠の任意`annotations`は`{start,end,text}`の配列で、元の引用範囲内の昇順・非重複chunkに限定します。最大6件、textは改行・control文字なしでUTF-8 480bytesまで、根拠あたり1440bytes・モデル全参照のtext合計12KBまでです。同じpath/ref/range/quoteが複数回現れる場合、注釈の省略は共有し、矛盾する注釈はモデルごと拒否します。v1/v2の注釈なし根拠は引き続き読めます。引用の実在は検証しますが、モデルの意味や理由の解釈が正しいという保証ではありません。`model`だけがモデル全体像を置き換え、自由質問・proposal・移動は置き換えません。旧M番号mapは旧API/diagram互換で残り、新しいモデルとして再解釈しません。
 
 `select ID`、`evidence N`、`back`、`overview`、`quiet`、`questions on|off`、`skip`、`proposal clear`は学習入力からも実行できる決定的操作です。`back`は根拠→主張→全体、`overview`は選択解除です。evidenceの番号はsignature、tests、一般evidenceの順です。`reference`は選択主張（旧diveならマップ）の最初の固定根拠、または明示path/rangeを読みます。普通の質問は選択主張を文脈に含みます。問いは任意で、quiet/off/skipでも不利益はありません。現状の理解と仕様への意見を区別し、点数・承認・自動handoffは行いません。`proposal TEXT`は未実装の仮説として別フィールドに残り、`proposal clear`で解除します。
 
@@ -170,6 +232,8 @@ npm install --ignore-scripts --no-save --package-lock=false \
   typebox@1.3.27 @xterm/headless@6.0.0
 npm run typecheck
 npm test
+# 同梱pluginのreal headless Neovim integrationにはnvimが必要（開発実機: v0.12.4）
+node --experimental-strip-types --test tests/annotations.test.ts tests/pane.test.ts tests/neovim.test.ts
 python3 tests/native-qa.py
 node tests/render-captures.mjs
 PI_UNDERSTANDING_TUI_MODE=regular python3 tests/native-qa.py
@@ -179,7 +243,7 @@ python3 tests/screenshots.py  # Firefoxの隔離profileで両modeのPNGを作り
 
 `native-qa.py`のbinary既定値は開発時のNix Pi 1.0.4です。他のbinaryでは`PI_UNDERSTANDING_BINARY=/path/to/pi`を指定します。専用config directoryとfixture repositoryを`.evidence/native-qa`に作り、個人のauth/settingsを開かず、明示ロードしたdeterministic providerだけを使います。実際の有料推論やnetwork inferenceは行いません。QA providerはpackage manifestに含めません。
 
-model/snapshotのbackend契約testsは、変更なしrepositoryのモデル生成、signature/testも含むexact照合、partial rangeの元行番号、追加固定読込、v1移行とsource-free v2保存、Git object/index/ref非変更、skillの有効登録からnative contextへの送信、proposalと現状の分離、世代cancelをdeterministic providerで確認します。新しいTUIの両mode/サイズ・mouse/Tab/戻るの受入れは別のrender QAが必要です。Ghostty→mosh→herdrの実接続、物理IME、有料推論の品質・学習効果は未検証です。
+model/snapshotのbackend契約testsは、変更なしrepositoryのモデル生成、signature/testも含むexact照合、partial rangeの元行番号、追加固定読込、v1移行とsource-free v2保存、Git object/index/ref非変更、skillの有効登録からnative contextへの送信、proposalと現状の分離、世代cancelをdeterministic providerで確認します。注釈のrange/text/count/persistence検証、旧保存state、両modeの120/80/40列のTUI表示・toggle・draft保持・根拠移動、real isolated headless Neovimの全文・実extmark・range移動・toggle・write拒否、malformed/private file拒否、実serverへのpublic `/u nvim` command、引用外のコード・既存未保存buffer保持・injection境界も検証します。結果は`.evidence/neovim`のtext/JSONへ残します。GUI terminal launcherの実表示はこのheadless testには含みません。新しいTUIの両mode/サイズ・mouse/Tab/戻るの受入れは別のrender QAが必要です。Ghostty→mosh→herdrの実接続、物理IME、有料推論の品質・学習効果は未検証です。
 
 既存の検証は本番のscope、runner、pane、extensionを使います。未commit分のindex/worktree/削除/未追跡source、branchの固定・移動、AI選択の確認境界、scope isolation、引用のexact一致、path traversal、symlink、HTML escape、active branch restore、会話分離、native failure/usage/cancellation、publication/handoffをテストします。実Pi RPCでnode_modulesのないraw sourceのloaderを確認し、PTYのfullscreen/regular両方で`focus`・互換`wide`の入力所有、Ctrl+Alt+Uの往復と両方の下書き保持（120/80/160列）、Ctrl+D後のdraft再開、sessionに保存された質問の通常/学習振分け、非表示時の通常入力、日本語paste/cursor marker、ほぼ全画面の表示、番号dive・引用・一操作の全体復帰、通常chat、resize、cancel、failure、reloadを確認します。previewテストは実loopback HTTPと注入したhome-preview adapterでroute・method・停止・開始失敗・cleanup失敗・世代競合を検証し、実Tailscale登録は実行しません。
 

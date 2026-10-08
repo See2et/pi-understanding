@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { initTheme, theme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { CURSOR_MARKER, KeybindingsManager, TUI_KEYBINDINGS, setKeybindings, visibleWidth, type OverlayHandle, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { UnderstandingPane, terminalText, type PaneView } from "../src/pane.ts";
@@ -42,6 +43,7 @@ function mount(learning: Learning | undefined, columns = 120, rows = 36, mode = 
     else if (text === "quiet") learning.questions = false;
     else if (text === "questions on") learning.questions = true;
     else if (text === "proposal clear") learning.proposal = undefined;
+    else if (text === "annotations toggle") learning.annotationsVisible = learning.annotationsVisible === false;
     else if (/^dive \d+$/.test(text)) { dive(learning, Number(text.slice(5))); learning.selectedClaim = undefined; learning.evidenceView = undefined; }
     else return;
     if (production) pane.navigate();
@@ -626,4 +628,36 @@ test("long claim reading in the overview: ↓ takes the next claim when visible 
   pane.handleInput(DOWN); assert.match(text(), /▸ 現状 長い主張の後ろの操作/);
   pane.handleInput("\r"); assert.equal(asked.at(-1), "select long-controls");
   pane.handleInput("\x0f"); assert.match(text(), /▸ 現状 長い主張の後ろの操作/);
+});
+
+test("range-bound AI annotations render separately, toggle without changing originals/drafts, and retain evidence navigation and explicit Neovim action", () => {
+  mkdirSync(".evidence/neovim", { recursive: true });
+  for (const mode of ["regular", "fullscreen"]) for (const [columns, rows] of [[120, 44], [80, 32], [40, 24]] as const) {
+    const learning = modelLearning();
+    const e = learning.claims![1]!.tests![0]!;
+    e.annotations = [{ start: 12, end: 12, text: "入力した値を変更せず返す。" }, { start: 13, end: 14, text: "それぞれの関数が値の受渡しを担当する。" }];
+    selectClaim(learning, "no-tools"); openClaimEvidence(learning, 2);
+    const original = JSON.stringify(e);
+    const { pane, asked, text, frame, width } = mount(learning, columns, rows, mode, undefined, true);
+    const screen = text();
+    assert.match(screen, /AI注釈: 解釈/);
+    const seen = [screen]; for (let i = 0; i < 15; i++) { pane.handleInput(DOWN); seen.push(text()); }
+    assert.match(seen.join("\n"), /AI解釈 L12-12/); assert.match(seen.join("\n"), /AI解釈 L13-14/);
+    // Wide views show the literal originals; tiny views hard-wrap but keep numbered starts.
+    for (const n of [12, 13, 14]) assert.match(seen.join("\n"), new RegExp(`${n} │ `));
+    if (columns >= 80) assert.match(seen.join("\n"), /12 │ {3}export function step12/);
+    assert.ok(frame().every(line => visibleWidth(line) === width));
+    pane.handleInput("unsent-draft"); pane.handleInput("\x1b[97;7u");
+    assert.equal(asked.at(-1), "annotations toggle"); assert.equal(learning.annotationsVisible, false);
+    assert.equal(pane.view().input, "unsent-draft"); assert.equal(JSON.stringify(e), original);
+    assert.doesNotMatch(text(), /AI解釈 L/); assert.match(text(), /AI注釈: 非表示/);
+    pane.handleInput("\x1b[110;7u"); assert.equal(asked.at(-1), "nvim"); assert.equal(pane.view().input, "unsent-draft");
+    pane.handleInput("\x1b[97;7u"); assert.equal(learning.annotationsVisible, true);
+    const remounted = mount(learning, columns, rows, mode, pane.view()); assert.equal(remounted.pane.view().input, "unsent-draft");
+    pane.handleInput("\t"); assert.equal(asked.at(-1), "evidence 3", "Tab still navigates code evidence without sending the draft");
+    pane.handleInput("\x0f"); assert.equal(asked.at(-1), "overview"); assert.equal(pane.view().input, "unsent-draft");
+    writeFileSync(`.evidence/neovim/pane-${mode}-${columns}.txt`, seen.join("\n--- viewport ---\n"));
+    const old = modelLearning(); selectClaim(old, "no-tools"); openClaimEvidence(old, 2);
+    assert.doesNotMatch(mount(old, columns, rows, mode).text(), /AI解釈 L|AI注釈:/, "old evidence does not invent annotations");
+  }
 });

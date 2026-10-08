@@ -1,7 +1,36 @@
 import type { Source } from "./scope.ts";
 
 /** Exact source existence is checked, not the semantic truth of the statement. */
-export type Evidence = { path: string; ref: string; start: number; end: number; quote: string };
+export type Annotation = { start: number; end: number; text: string };
+export const ANNOTATION_LIMITS = { count: 6, textBytes: 480, evidenceBytes: 1440, modelBytes: 12_000 };
+export type Evidence = { path: string; ref: string; start: number; end: number; quote: string; annotations?: Annotation[] };
+/** AI interpretation, never part of the exact quote. Sorted disjoint semantic chunks only. */
+export function validateAnnotations(raw: unknown, start: number, end: number): Annotation[] | undefined {
+  if (raw === undefined) return undefined; // v1/v2 evidence remains valid without annotations.
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start || end - start > 60) throw new Error("Invalid annotation evidence range");
+  if (!Array.isArray(raw) || raw.length > ANNOTATION_LIMITS.count) throw new Error("Invalid annotations count");
+  let previous = start - 1, bytes = 0;
+  return raw.map((value: unknown) => {
+    const a = value as Annotation | null;
+    if (!a || !Number.isSafeInteger(a.start) || !Number.isSafeInteger(a.end) || a.start <= previous || a.start < start || a.end < a.start || a.end > end) throw new Error("Annotation outside exact evidence or overlapping/unsorted");
+    if (typeof a.text !== "string" || !a.text.trim() || /[\x00-\x1f\x7f-\x9f\u2028\u2029]/.test(a.text) || Buffer.byteLength(a.text) > ANNOTATION_LIMITS.textBytes) throw new Error("Invalid annotation text");
+    bytes += Buffer.byteLength(a.text);
+    if (bytes > ANNOTATION_LIMITS.evidenceBytes) throw new Error("Annotations exceed evidence budget");
+    previous = a.end;
+    return { start: a.start, end: a.end, text: a.text };
+  });
+}
+/** Value-identical evidence has one interpretation; omissions inherit it, conflicts fail closed. */
+export function canonicalAnnotations(evidence: Evidence[], checkBudget = true): void {
+  const groups = new Map<string, Evidence[]>();
+  for (const e of evidence) { const key = JSON.stringify([e.path, e.ref, e.start, e.end, e.quote]); const group = groups.get(key) ?? []; group.push(e); groups.set(key, group); }
+  for (const group of groups.values()) {
+    const supplied = group.filter(e => e.annotations?.length);
+    if (supplied.some(e => JSON.stringify(e.annotations) !== JSON.stringify(supplied[0]!.annotations))) throw new Error("Conflicting annotations for identical evidence");
+    if (supplied.length) for (const e of group) e.annotations = supplied[0]!.annotations;
+  }
+  if (checkBudget && evidence.reduce((n, e) => n + (e.annotations ?? []).reduce((b, a) => b + Buffer.byteLength(a.text), 0), 0) > ANNOTATION_LIMITS.modelBytes) throw new Error("Annotations exceed model persistence budget");
+}
 export type ClaimKind = "concept" | "rule" | "boundary" | "behavior" | "rationale";
 export type Claim = {
   id: string; kind: ClaimKind; statement: string; detail?: string;
@@ -9,7 +38,7 @@ export type Claim = {
   relations: { to: string; type: "depends" | "protects" | "constrains" | "explains" }[];
   challenge?: string;
 };
-export type ModelState = { claims?: Claim[]; modelSummary?: string; selectedClaim?: string; evidenceView?: Evidence; questions: boolean; skippedChallenges?: string[]; proposal?: string };
+export type ModelState = { claims?: Claim[]; modelSummary?: string; selectedClaim?: string; evidenceView?: Evidence; annotationsVisible?: boolean; questions: boolean; skippedChallenges?: string[]; proposal?: string };
 export type ReadRequest = { path: string; ref?: string; start: number; end: number; why: string };
 export type SearchRequest = { text: string; why: string };
 export type ReadRecord = { path: string; ref: string; start?: number; end?: number; digest?: string; status: "sent" | "fetched" | "searched" | "unavailable" | "excluded" | "uncaptured" | "budget"; reason?: string };
@@ -22,7 +51,8 @@ export function validateEvidence(raw: unknown, sources: Source[]): Evidence {
   if (!s) throw new Error("Evidence is outside the supplied pinned source");
   const quote = s.text.split("\n").slice(e.start - (s.startLine ?? 1), e.end - (s.startLine ?? 1) + 1).join("\n");
   if (e.quote !== quote || !quote.trim()) throw new Error("Evidence quote does not match exact source lines");
-  return { path: e.path, ref: e.ref, start: e.start, end: e.end, quote };
+  const annotations = validateAnnotations(e.annotations, e.start, e.end);
+  return { path: e.path, ref: e.ref, start: e.start, end: e.end, quote, ...(annotations === undefined ? {} : { annotations }) };
 }
 const bounded = (value: unknown, limit: number, name: string): string => {
   if (typeof value !== "string" || !value.trim() || value.length > limit) throw new Error(`Invalid ${name}`);
@@ -52,6 +82,7 @@ export function validateClaims(value: unknown, sources: Source[]): Claim[] {
       ...(n.tests === undefined ? {} : { tests: (n.tests as unknown[]).map(e => validateEvidence(e, sources)) }),
       ...(n.challenge === undefined ? {} : { challenge: bounded(n.challenge, 1000, "challenge") }) };
   });
+  canonicalAnnotations(claims.flatMap(claimEvidence));
   if (claims.reduce((bytes, c) => bytes + claimEvidence(c).reduce((n, e) => n + Buffer.byteLength(e.quote), 0), 0) > 96_000) throw new Error("Model evidence exceeds persistence budget");
   if (claims.some(c => c.relations.some(r => !ids.has(r.to) || r.to === c.id))) throw new Error("Relations must refer to other real claims");
   return claims;
