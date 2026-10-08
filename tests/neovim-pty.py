@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""No-config real Pi/Neovim/Pi PTY roundtrip. Isolated fixture config/repository; no inference/auth.
+"""No connection overrides: real Pi/Neovim/Pi PTY roundtrip with isolated user init/plugin; no inference/auth.
 Run PI_UNDERSTANDING_TUI_MODE=regular as well as the default fullscreen.
 """
 import os, subprocess, json, time, pathlib, shutil, hashlib, pty, fcntl, termios, struct, signal, select
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MODE = os.environ.get('PI_UNDERSTANDING_TUI_MODE', 'fullscreen')
 assert MODE in ('fullscreen', 'regular')
-OUT = ROOT / '.evidence/neovim-zero-config' / MODE
+OUT = ROOT / '.evidence/neovim-user-config' / MODE
 OUT.mkdir(parents=True, exist_ok=True)
 (OUT / 'summary.json').unlink(missing_ok=True)
-for directory in ('config', 'workspace'):
+for directory in ('config', 'workspace', 'xdg', 'home'):
     if (OUT / directory).exists(): shutil.rmtree(OUT / directory)
 WORK = OUT / 'workspace'; WORK.mkdir(); (WORK / 'src').mkdir()
 SOURCE = 'export function submit() { return "PINNED_RESULT"; }\n// OUTSIDE_SELECTED_RANGE\nexport const outside = "WHOLE_FIXED_FILE";\n'
@@ -17,8 +17,11 @@ SOURCE = 'export function submit() { return "PINNED_RESULT"; }\n// OUTSIDE_SELEC
 (WORK / 'README.md').write_text('# Fixture\nUser flow: submit -> validate -> result\n')
 def git(*args): return subprocess.check_output(['git', *args], cwd=WORK, text=True).strip()
 git('init', '-q'); git('add', '.'); git('-c', 'user.name=QA', '-c', 'user.email=qa@example.invalid', 'commit', '-qm', 'PTY fixture')
-ENV = {**os.environ, 'PI_CODING_AGENT_DIR': str(OUT / 'config'), 'PI_OFFLINE': '1', 'PI_TELEMETRY': '0', 'TERM': 'xterm-256color', 'COLORTERM': 'truecolor', 'XDG_CONFIG_HOME': str(OUT / 'xdg/config'), 'XDG_DATA_HOME': str(OUT / 'xdg/data'), 'XDG_STATE_HOME': str(OUT / 'xdg/state'), 'NVIM_LOG_FILE': str(OUT / 'nvim.log')}
-for key in ('PI_UNDERSTANDING_NVIM_SERVER', 'PI_UNDERSTANDING_NVIM_TERMINAL', 'PI_UNDERSTANDING_NVIM_BINARY'): ENV.pop(key, None)
+CONFIG = OUT / 'xdg/config/nvim'; (CONFIG / 'plugin').mkdir(parents=True)
+(CONFIG / 'init.lua').write_text("vim.g.user_init_loaded = 'isolated-init'\nvim.opt.scrolloff = 7\nvim.opt.modeline = true\nvim.keymap.set('n', '<F6>', function() vim.g.user_mapping_used = (vim.g.user_mapping_used or 0) + 1 end, { desc = 'Isolated user mapping' })\n")
+(CONFIG / 'plugin/representative.lua').write_text("assert(vim.g.user_init_loaded == 'isolated-init', 'init must run before runtime plugins')\nvim.g.user_plugin_loaded = 'isolated-runtime-plugin'\n")
+ENV = {**os.environ, 'HOME': str(OUT / 'home'), 'PI_CODING_AGENT_DIR': str(OUT / 'config'), 'PI_OFFLINE': '1', 'PI_TELEMETRY': '0', 'TERM': 'xterm-256color', 'COLORTERM': 'truecolor', 'XDG_CONFIG_HOME': str(OUT / 'xdg/config'), 'XDG_CONFIG_DIRS': str(OUT / 'xdg/config-dirs'), 'XDG_DATA_HOME': str(OUT / 'xdg/data'), 'XDG_DATA_DIRS': str(OUT / 'xdg/data-dirs'), 'XDG_STATE_HOME': str(OUT / 'xdg/state'), 'XDG_CACHE_HOME': str(OUT / 'xdg/cache'), 'NVIM_APPNAME': 'nvim', 'NVIM_LOG_FILE': str(OUT / 'nvim.log')}
+for key in ('PI_UNDERSTANDING_NVIM_SERVER', 'PI_UNDERSTANDING_NVIM_TERMINAL', 'PI_UNDERSTANDING_NVIM_BINARY', 'VIMINIT', 'EXINIT', 'MYVIMRC', 'VIM', 'VIMRUNTIME'): ENV.pop(key, None)
 # Unrelated remote desktop variables must not select a GUI launcher.
 ENV['DISPLAY'] = ':9999'; ENV['WAYLAND_DISPLAY'] = 'unrelated-server-desktop'
 PI = os.environ.get('PI_UNDERSTANDING_BINARY', '/nix/store/rpga5vi5495pglblk0b57bcvrrp68dxz-pi-coding-agent-1.0.4/libexec/pi/pi')
@@ -51,7 +54,8 @@ def state(): return [e['data'] for e in session_entries() if e.get('customType')
 def observe(name):
     report = OUT / (name + '.json'); report.unlink(missing_ok=True)
     # Trusted fixed QA code inspects the actual interactive Neovim buffer and extmarks. No server/RPC.
-    lua = 'local b=vim.api.nvim_get_current_buf(); local d={pid=vim.fn.getpid(), handoff=vim.env.PI_UNDERSTANDING_NVIM_HANDOFF, source=table.concat(vim.api.nvim_buf_get_lines(b,0,-1,false),"\\n"), identity=vim.b.pi_understanding_identity, evidence=vim.b.pi_understanding_evidence, readonly=vim.bo.readonly, modifiable=vim.bo.modifiable, annotations=vim.api.nvim_buf_get_extmarks(b,vim.api.nvim_get_namespaces()["pi-understanding-annotations"],0,-1,{details=true})}; vim.fn.writefile({vim.json.encode(d)},' + json.dumps(str(report)) + ')'
+    send('\x1b[17~')  # Real F6 key: the init.lua mapping must remain usable in the fixed buffer.
+    lua = 'local b=vim.api.nvim_get_current_buf(); local d={pid=vim.fn.getpid(), handoff=vim.env.PI_UNDERSTANDING_NVIM_HANDOFF, source=table.concat(vim.api.nvim_buf_get_lines(b,0,-1,false),"\\n"), identity=vim.b.pi_understanding_identity, evidence=vim.b.pi_understanding_evidence, readonly=vim.bo.readonly, modifiable=vim.bo.modifiable, modeline=vim.bo.modeline, userConfig={init=vim.g.user_init_loaded, plugin=vim.g.user_plugin_loaded, scrolloff=vim.o.scrolloff, mappingUsed=vim.g.user_mapping_used, shadafile=vim.o.shadafile, swapfile=vim.bo.swapfile}, annotations=vim.api.nvim_buf_get_extmarks(b,vim.api.nvim_get_namespaces()["pi-understanding-annotations"],0,-1,{details=true})}; vim.fn.writefile({vim.json.encode(d)},' + json.dumps(str(report)) + ')'
     send(':lua ' + lua + '\r')
     until = time.monotonic() + 5
     while not report.exists():
@@ -60,6 +64,8 @@ def observe(name):
     observed = json.loads(report.read_text()); handoffs.append(observed['handoff']); assert observed['source'] == SOURCE, observed
     assert observed['identity']['digest'] == hashlib.sha256(SOURCE.encode()).hexdigest()
     assert observed['evidence'] == {'start': 1, 'end': 1}; assert observed['readonly'] and not observed['modifiable']
+    assert observed['userConfig'] == {'init': 'isolated-init', 'plugin': 'isolated-runtime-plugin', 'scrolloff': 7, 'mappingUsed': 1, 'shadafile': 'NONE', 'swapfile': False}, observed
+    assert not observed['modeline'], 'scratch must disable modelines even when user init enables them'
     assert len(observed['annotations']) == 1
     assert '固定の結果文字列を返す入口。' in json.dumps(observed['annotations'], ensure_ascii=False)
     return observed
@@ -102,7 +108,7 @@ try:
     assert not any('LEARNER_UNSENT' in json.dumps(m) for m in messages)
     assert (WORK / 'src/main.ts').read_text() == 'LIVE_WORKTREE_MUST_NOT_BE_READ\n'
     command('/qa-exit'); process.wait(timeout=10); drain()
-    summary = {'status': 'PASS', 'mode': MODE, 'publicCommand': '/u nvim', 'shortcut': 'Ctrl+Alt+N', 'noServerTerminalOrBinaryOverride': True, 'unrelatedDesktopEnv': True, 'wholePinnedSourceAndRealAnnotations': True, 'bothDraftsAndNavigationRetained': True, 'exitFailureRestored': True, 'signalRestored': True, 'sourceNonmutation': True, 'processExit': process.returncode}
+    summary = {'status': 'PASS', 'mode': MODE, 'publicCommand': '/u nvim', 'shortcut': 'Ctrl+Alt+N', 'noServerTerminalOrBinaryOverride': True, 'unrelatedDesktopEnv': True, 'wholePinnedSourceAndRealAnnotations': True, 'userInitRuntimePluginOptionAndMapping': True, 'bothDraftsAndNavigationRetained': True, 'exitFailureRestored': True, 'signalRestored': True, 'sourceNonmutation': True, 'processExit': process.returncode}
     (OUT / 'summary.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2)); print(json.dumps(summary, ensure_ascii=False))
 finally:
     (OUT / 'terminal.ansi').write_bytes(raw); (OUT / 'stages.json').write_text(json.dumps(stages, indent=2))

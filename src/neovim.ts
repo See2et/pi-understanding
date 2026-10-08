@@ -31,8 +31,8 @@ export async function writeNeovimHandoff(data: NeovimHandoff): Promise<string> {
 }
 // Fixed code only. Paths arrive as data through environment / luaeval argument, never evaluated Lua.
 export const NVIM_LAUNCH = "lua dofile(vim.env.PI_UNDERSTANDING_NVIM_PLUGIN .. '/lua/pi_understanding.lua').open(vim.env.PI_UNDERSTANDING_NVIM_HANDOFF)";
-/** Run the receiver after initialization; --cmd's selected buffer is reset by startup. */
-export const neovimLaunchArgs = (): string[] => ["-u", "NONE", "-i", "NONE", "-n", "-c", NVIM_LAUNCH];
+/** Load normal user config/plugins, then the receiver; --cmd's buffer is reset by startup. Disable viewer ShaDa/swap writes. */
+export const neovimLaunchArgs = (): string[] => ["-i", "NONE", "-n", "-c", NVIM_LAUNCH];
 const vimString = (text: string) => `'${text.replaceAll("'", "''")}'`;
 export const serverExpression = (file: string): string => `luaeval('require("pi_understanding").open(_A)', ${vimString(file)})`;
 function terminalArgs(raw: string): string[] {

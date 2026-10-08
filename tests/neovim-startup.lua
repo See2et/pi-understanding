@@ -1,6 +1,14 @@
 -- Invoked by -c after the exact production launch args, not Neovim's -l script mode.
 -- Required invariants fail the process, rather than being masked by a later qa! command.
 local ok, err = xpcall(function()
+  assert(vim.g.user_init_loaded == 'isolated-init', 'normal user init.lua must load')
+  assert(vim.g.user_plugin_loaded == 'isolated-runtime-plugin', 'normal user runtime plugin must load')
+  assert(vim.o.scrolloff == 7, 'user option must survive receiver startup')
+  assert(vim.fn.maparg('<F6>', 'n', false, true).desc == 'Isolated user mapping', 'user mapping must survive receiver startup')
+  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes('<F6>', true, false, true), 'xt', false)
+  assert(vim.g.user_mapping_used == 1, 'user mapping must be usable in the selected evidence buffer')
+  assert(vim.o.shadafile == 'NONE' and not vim.bo.swapfile, 'viewer ShaDa and swap must remain disabled')
+  assert(not vim.g.handoff_injected, 'source metacharacters and modelines must not execute')
   local data = vim.json.decode(table.concat(vim.fn.readfile(vim.env.PI_UNDERSTANDING_NVIM_HANDOFF), '\n'))
   local buf = vim.api.nvim_get_current_buf()
   if vim.env.PI_UNDERSTANDING_TEST_FAIL_READONLY == '1' then vim.bo[buf].readonly = false end
@@ -25,7 +33,9 @@ local ok, err = xpcall(function()
   end
   io.stdout:write(vim.json.encode({ status = 'STARTUP_CONTRACT_OK', buffer = buf, readonly = vim.bo[buf].readonly,
     modifiable = vim.bo[buf].modifiable, source = source, identity = vim.b[buf].pi_understanding_identity,
-    evidence = vim.b[buf].pi_understanding_evidence, range = range, annotations = marks }) .. '\n')
+    evidence = vim.b[buf].pi_understanding_evidence, range = range, annotations = marks,
+    userConfig = { init = vim.g.user_init_loaded, plugin = vim.g.user_plugin_loaded, scrolloff = vim.o.scrolloff,
+      mappingUsed = vim.g.user_mapping_used, shadafile = vim.o.shadafile, swapfile = vim.bo[buf].swapfile } }) .. '\n')
   io.stdout:flush()
 end, debug.traceback)
 if not ok then

@@ -53,7 +53,7 @@ Neovimには選択した根拠の**固定file全体**と同じ注釈を渡すた
 
 `nvim`がPATHにない場合は明示エラーです。RPC・print・TTYのない実行では不可視のinteractive processを起動しません。`/u nvim export`、または以下の明示server／別terminal設定を使えます。DISPLAYやWAYLANDの存在からGUIを自動起動することはありません。
 
-Neovimは`-u NONE -i NONE -n`で起動し、通常の初期化後の`-c` commandで同梱Luaを読み、固定根拠bufferを選択します。ユーザーconfig、swap、shadaは使いません。Neovim 0.10以降の標準Lua APIだけを使う薄いpluginを`lua/`と`plugin/`に同梱しており、外部pluginのinstallやglobal configの編集は不要です。
+Neovimは通常のユーザーconfig（`init.lua`／`init.vim`）とruntime pluginを読み込み、その初期化後の`-c` commandで同梱Luaを読み、固定根拠bufferを選択します。起動引数の`-i NONE -n`で、このviewer起動のShaDa読書きとswap作成は無効にします。Neovim 0.10以降の標準Lua APIだけを使う薄いpluginを`lua/`と`plugin/`に同梱しており、外部pluginのinstallやglobal configの編集は不要です。ユーザーconfig／pluginは信頼するコードとして実行します。任意の設定との互換性や副作用の隔離を保証するものではなく、pluginやLSPの追加・強制有効化も行いません。
 
 #### 既存Neovim serverへ開く（任意）
 
@@ -89,7 +89,7 @@ export PI_UNDERSTANDING_NVIM_TERMINAL='["xterm","-e"]'
 pi -e "$HOME/ghq/github.com/See2et/pi-understanding"
 ```
 
-新しいNeovimは`-u NONE -i NONE -n`で起動し、通常の初期化が完了した後の`-c` commandで、その実行だけ同梱Luaを読み、固定根拠bufferを選択します。ユーザーconfig、swap、shadaは使いません。Piへの成功通知はlauncherの開始までを確認します。開始後のterminalやNeovimのエラーは別terminalで確認してください。visible terminalを作るlauncherを指定する責任はユーザー側にあります。この設定がなければ、対話TUIでは今のterminalで開きます。
+新しいNeovimも通常のユーザーconfigとruntime pluginを読み込み、初期化後の`-c` commandで、その実行だけ同梱Luaを読み、固定根拠bufferを選択します。今のterminalでの起動と同じく、`-i NONE -n`でShaDa読書きとswap作成は無効にします。Piへの成功通知はlauncherの開始までを確認します。開始後のterminalやNeovimのエラーは別terminalで確認してください。visible terminalを作るlauncherを指定する責任はユーザー側にあります。この設定がなければ、対話TUIでは今のterminalで開きます。
 
 #### 手動のfile受渡し
 
@@ -107,7 +107,7 @@ bufferはsource fileそのものではない`nofile` scratchです。readonly／
 
 受渡しfileはOS temporary directoryの専用0700 directory内に0600で作り、1fileのsourceは既存captureと同じ1MB、JSON全体は6.2MBを上限にします。全sourceのSHA-256、引用のexact一致、元の範囲、注釈の個数・text・範囲とfileのowner／permissionをNeovimでも検証してから開きます。注釈textは実行しません。shell展開や受渡しデータのLua評価もありません。
 
-このdirectoryにはprivate source全文が残ります。自動削除は行わないので、Neovimで開き終えた不要な受渡しは通知された専用directoryごと手動削除してください。socket directoryもserverを終了してから手動削除できます。session exportとは別のlocal copyであり、共有するとsource・注釈・identityが共有されます。readonlyとwrite拒否はOS sandboxではありません。自分でoptions/autocmdを無効化したり任意Luaを実行するユーザーを制限するものではなく、既存serverのユーザーpluginの挙動も隔離しません。
+このdirectoryにはprivate source全文が残ります。自動削除は行わないので、Neovimで開き終えた不要な受渡しは通知された専用directoryごと手動削除してください。socket directoryもserverを終了してから手動削除できます。session exportとは別のlocal copyであり、共有するとsource・注釈・identityが共有されます。readonlyとwrite拒否はOS sandboxではありません。自分でoptions/autocmdを無効化したり任意Luaを実行するユーザーを制限するものではなく、新規起動・既存serverのどちらでもユーザーconfig／pluginの挙動を隔離しません。
 
 ### モデルのbackend契約
 
@@ -242,7 +242,8 @@ npm run typecheck
 npm test
 # 同梱pluginのreal headless Neovim integrationにはnvimが必要（開発実機: v0.12.4）
 node --experimental-strip-types --test tests/annotations.test.ts tests/pane.test.ts tests/neovim.test.ts
-python3 tests/neovim-pty.py  # 設定なしの実Pi→Neovim→Pi往復、draft保持と異常終了
+python3 tests/neovim-pty.py  # 接続設定なし・隔離ユーザーconfigで実Pi→Neovim→Pi往復
+PI_UNDERSTANDING_TUI_MODE=regular python3 tests/neovim-pty.py
 python3 tests/native-qa.py
 node tests/render-captures.mjs
 PI_UNDERSTANDING_TUI_MODE=regular python3 tests/native-qa.py
@@ -252,7 +253,7 @@ python3 tests/screenshots.py  # Firefoxの隔離profileで両modeのPNGを作り
 
 `native-qa.py`のbinary既定値は開発時のNix Pi 1.0.4です。他のbinaryでは`PI_UNDERSTANDING_BINARY=/path/to/pi`を指定します。専用config directoryとfixture repositoryを`.evidence/native-qa`に作り、個人のauth/settingsを開かず、明示ロードしたdeterministic providerだけを使います。実際の有料推論やnetwork inferenceは行いません。QA providerはpackage manifestに含めません。
 
-model/snapshotのbackend契約testsは、変更なしrepositoryのモデル生成、signature/testも含むexact照合、partial rangeの元行番号、追加固定読込、v1移行とsource-free v2保存、Git object/index/ref非変更、skillの有効登録からnative contextへの送信、proposalと現状の分離、世代cancelをdeterministic providerで確認します。注釈のrange/text/count/persistence検証、旧保存state、両modeの120/80/40列のTUI表示・toggle・draft保持・根拠移動、real isolated headless Neovimの全文・実extmark・range移動・toggle・write拒否、malformed/private file拒否、実serverへのpublic `/u nvim` command、引用外のコード・既存未保存buffer保持・injection境界も検証します。結果は`.evidence/neovim`のtext/JSONへ残します。terminal所有権と復帰・世代変更・二重起動拒否はpublic commandの制御テストでも検証します。`neovim-pty.py`は隔離設定とdeterministic providerで、設定なしのpublic command／pane shortcutから実Pi→Neovim→Piを往復し、固定file全文・実注釈・選択範囲・未送信draftの保持と異常終了からの復帰を確認します。結果は`.evidence/neovim-zero-config`です。GUI terminal launcherの実表示はこれらのtestには含みません。新しいTUIの両mode/サイズ・mouse/Tab/戻るの受入れは別のrender QAが必要です。Ghostty→mosh→herdrの実接続、物理IME、有料推論の品質・学習効果は未検証です。
+model/snapshotのbackend契約testsは、変更なしrepositoryのモデル生成、signature/testも含むexact照合、partial rangeの元行番号、追加固定読込、v1移行とsource-free v2保存、Git object/index/ref非変更、skillの有効登録からnative contextへの送信、proposalと現状の分離、世代cancelをdeterministic providerで確認します。注釈のrange/text/count/persistence検証、旧保存state、両modeの120/80/40列のTUI表示・toggle・draft保持・根拠移動、real isolated headless Neovimの全文・実extmark・range移動・toggle・write拒否、malformed/private file拒否、実serverへのpublic `/u nvim` command、引用外のコード・既存未保存buffer保持・injection境界も検証します。結果は`.evidence/neovim`のtext/JSONへ残します。terminal所有権と復帰・世代変更・二重起動拒否はpublic commandの制御テストでも検証します。`neovim-pty.py`は隔離設定とdeterministic providerで、設定なしのpublic command／pane shortcutから実Pi→Neovim→Piを往復し、固定file全文・実注釈・選択範囲・未送信draftの保持と異常終了からの復帰を確認します。ユーザーの実configは読まず、HOME・XDG directory・Neovimの初期化環境変数を隔離し、fixtureの`init.lua`とlocal runtime plugin、option・mappingの読込み／利用も確認します。本番の起動argvによるheadless確認と明示terminal経路のheadless launcher確認は`.evidence/neovim-user-config/headless`と`explicit-terminal`、PTYの結果は`.evidence/neovim-user-config/fullscreen`と`regular`に残します。GUI terminal launcherの実表示や任意の個人pluginとの互換性はこれらのtestには含みません。新しいTUIの両mode/サイズ・mouse/Tab/戻るの受入れは別のrender QAが必要です。Ghostty→mosh→herdrの実接続、物理IME、有料推論の品質・学習効果は未検証です。
 
 既存の検証は本番のscope、runner、pane、extensionを使います。未commit分のindex/worktree/削除/未追跡source、branchの固定・移動、AI選択の確認境界、scope isolation、引用のexact一致、path traversal、symlink、HTML escape、active branch restore、会話分離、native failure/usage/cancellation、publication/handoffをテストします。実Pi RPCでnode_modulesのないraw sourceのloaderを確認し、PTYのfullscreen/regular両方で`focus`・互換`wide`の入力所有、Ctrl+Alt+Uの往復と両方の下書き保持（120/80/160列）、Ctrl+D後のdraft再開、sessionに保存された質問の通常/学習振分け、非表示時の通常入力、日本語paste/cursor marker、ほぼ全画面の表示、番号dive・引用・一操作の全体復帰、通常chat、resize、cancel、failure、reloadを確認します。previewテストは実loopback HTTPと注入したhome-preview adapterでroute・method・停止・開始失敗・cleanup失敗・世代競合を検証し、実Tailscale登録は実行しません。
 

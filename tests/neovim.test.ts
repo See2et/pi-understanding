@@ -18,7 +18,19 @@ const source = { path: "src/quote'; vim.g.handoff_injected = true; --.ts", ref: 
 const evidence: Evidence = { path: source.path, ref: source.ref, start: 2, end: 5, quote: code.split("\n").slice(1, 5).join("\n"), annotations: [{ start: 2, end: 3, text: "値がなければ処理を終える。" }, { start: 4, end: 5, text: "'); vim.g.handoff_injected = true; --" }] };
 const scope = (): Scope => ({ id: "fixed-scope", repository: "repo", root: "/unused", snapshot: "snapshot-identity", request: { kind: "repository" }, base: "base", head: "head", capturedAt: 0, fingerprint: "fixed", omitted: 0, files: [source.path], sources: [source] });
 const isolated = path.join(pluginRoot, ".evidence/neovim/isolated");
-const environment = () => ({ ...process.env, XDG_CONFIG_HOME: path.join(isolated, "config"), XDG_DATA_HOME: path.join(isolated, "data"), XDG_STATE_HOME: path.join(isolated, "state"), NVIM_LOG_FILE: path.join(pluginRoot, ".evidence/neovim/nvim.log") });
+const environment = (): NodeJS.ProcessEnv => {
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: isolated, XDG_CONFIG_HOME: path.join(isolated, "config"), XDG_CONFIG_DIRS: path.join(isolated, "config-dirs"), XDG_DATA_HOME: path.join(isolated, "data"), XDG_DATA_DIRS: path.join(isolated, "data-dirs"), XDG_STATE_HOME: path.join(isolated, "state"), XDG_CACHE_HOME: path.join(isolated, "cache"), NVIM_APPNAME: "nvim", NVIM_LOG_FILE: path.join(pluginRoot, ".evidence/neovim/nvim.log") };
+  for (const key of ["VIMINIT", "EXINIT", "MYVIMRC", "VIM", "VIMRUNTIME"]) delete env[key];
+  return env;
+};
+const startupArtifact = path.join(pluginRoot, ".evidence/neovim-user-config/headless");
+async function startupEnvironment(): Promise<NodeJS.ProcessEnv> {
+  const config = path.join(startupArtifact, "config/nvim");
+  await mkdir(path.join(config, "plugin"), { recursive: true });
+  await writeFile(path.join(config, "init.lua"), "vim.g.user_init_loaded = 'isolated-init'\nvim.opt.scrolloff = 7\nvim.opt.modeline = true\nvim.keymap.set('n', '<F6>', function() vim.g.user_mapping_used = (vim.g.user_mapping_used or 0) + 1 end, { desc = 'Isolated user mapping' })\n");
+  await writeFile(path.join(config, "plugin/representative.lua"), "assert(vim.g.user_init_loaded == 'isolated-init', 'init must run before runtime plugins')\nvim.g.user_plugin_loaded = 'isolated-runtime-plugin'\n");
+  return { ...environment(), XDG_CONFIG_HOME: path.dirname(config) };
+}
 
 async function fixtureHandoff() {
   const data = await neovimHandoff(scope(), evidence);
@@ -28,7 +40,7 @@ async function fixtureHandoff() {
 
 async function verifyStartup(file: string, failReadonly = false) {
   const result = await exec("nvim", ["--headless", ...neovimLaunchArgs(), "-c", "lua dofile(vim.env.PI_UNDERSTANDING_TEST_STARTUP_CHECK)"], {
-    timeout: 20_000, env: { ...environment(), PI_UNDERSTANDING_NVIM_PLUGIN: pluginRoot, PI_UNDERSTANDING_NVIM_HANDOFF: file,
+    timeout: 20_000, env: { ...await startupEnvironment(), PI_UNDERSTANDING_NVIM_PLUGIN: pluginRoot, PI_UNDERSTANDING_NVIM_HANDOFF: file,
       PI_UNDERSTANDING_TEST_STARTUP_CHECK: path.join(pluginRoot, "tests/neovim-startup.lua"), PI_UNDERSTANDING_TEST_FAIL_READONLY: failReadonly ? "1" : "0" },
   });
   assert.doesNotMatch(result.stderr, /E\d+:|stack traceback|assertion failed/i, "startup must not conceal Neovim/Lua errors");
@@ -40,6 +52,7 @@ test("real isolated headless Neovim shows whole pinned source, exact annotations
   const { data, file, directory } = await fixtureHandoff();
   const artifact = path.join(pluginRoot, ".evidence/neovim"); await mkdir(artifact, { recursive: true });
   await rm(path.join(artifact, "headless-launch.txt"), { force: true });
+  await rm(path.join(startupArtifact, "startup.json"), { force: true });
   try {
     const live = path.join(directory, source.path); await mkdir(path.dirname(live), { recursive: true });
     await writeFile(live, "LIVE WORK MUST NOT BE READ OR MODIFIED\n");
@@ -76,11 +89,51 @@ test("real isolated headless Neovim shows whole pinned source, exact annotations
     });
     await writeFile(path.join(artifact, "headless-output.txt"), result.stdout + result.stderr);
     const launch = await verifyStartup(file);
-    await writeFile(path.join(artifact, "headless-launch.txt"), "Production new-launch args verified after normal initialization\n" + launch.stdout + launch.stderr);
+    await writeFile(path.join(startupArtifact, "startup.json"), launch.stdout);
+    await writeFile(path.join(artifact, "headless-launch.txt"), "Production new-launch args verified after isolated user init and runtime plugin initialization\n" + launch.stdout + launch.stderr);
     assert.equal(await readFile(file, "utf8"), JSON.stringify(data), "handoff unchanged by Neovim");
     assert.equal(await readFile(live, "utf8"), "LIVE WORK MUST NOT BE READ OR MODIFIED\n", "current worktree source is neither read instead of fixed bytes nor mutated");
     const actual = JSON.parse(await readFile(report, "utf8")); assert.equal(actual.nonmutation, true); assert.equal(actual.failures.length, bad.length); assert.equal(actual.annotations.length, 2);
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("explicit terminal route launches real Neovim with normal isolated config before selecting fixed evidence", async () => {
+  const artifact = path.join(pluginRoot, ".evidence/neovim-user-config/explicit-terminal");
+  await mkdir(artifact, { recursive: true });
+  const report = path.join(artifact, "startup.json"), launcher = path.join(artifact, "launcher.mjs");
+  await rm(report, { force: true });
+  // A local headless launcher exercises the actual detached argv route without requiring a GUI terminal.
+  await writeFile(launcher, `import { spawnSync } from 'node:child_process';
+import { writeFileSync, renameSync } from 'node:fs';
+const [binary, ...args] = process.argv.slice(2);
+const result = spawnSync(binary, ['--headless', ...args, '-c', 'lua dofile(vim.env.PI_UNDERSTANDING_TEST_STARTUP_CHECK)'], { encoding: 'utf8', timeout: 20000 });
+const report = process.env.PI_UNDERSTANDING_TEST_TERMINAL_REPORT;
+writeFileSync(report + '.tmp', JSON.stringify({ status: result.status, error: result.error?.message, stdout: result.stdout, stderr: result.stderr }));
+renameSync(report + '.tmp', report);
+`);
+  const env: NodeJS.ProcessEnv = { ...await startupEnvironment(), PI_UNDERSTANDING_NVIM_TERMINAL: JSON.stringify([process.execPath, launcher]), PI_UNDERSTANDING_TEST_STARTUP_CHECK: path.join(pluginRoot, "tests/neovim-startup.lua"), PI_UNDERSTANDING_TEST_TERMINAL_REPORT: report };
+  const keys = ["HOME", "XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_HOME", "XDG_DATA_DIRS", "XDG_STATE_HOME", "XDG_CACHE_HOME", "NVIM_APPNAME", "NVIM_LOG_FILE", "VIMINIT", "EXINIT", "MYVIMRC", "VIM", "VIMRUNTIME", "PI_UNDERSTANDING_NVIM_SERVER", "PI_UNDERSTANDING_NVIM_BINARY", "PI_UNDERSTANDING_NVIM_TERMINAL", "PI_UNDERSTANDING_TEST_STARTUP_CHECK", "PI_UNDERSTANDING_TEST_TERMINAL_REPORT", "PI_UNDERSTANDING_TEST_FAIL_READONLY"];
+  const previous = keys.map(key => process.env[key]);
+  let file: string | undefined;
+  try {
+    for (const key of keys) { delete process.env[key]; if (env[key] !== undefined && !["PI_UNDERSTANDING_NVIM_SERVER", "PI_UNDERSTANDING_NVIM_BINARY", "PI_UNDERSTANDING_TEST_FAIL_READONLY"].includes(key)) process.env[key] = env[key]; }
+    const learning = freshLearning(scope()); learning.evidenceView = evidence;
+    const notice = await openNeovim(learning);
+    file = notice.split("\n")[0]!.split(": ")[1]!;
+    const deadline = Date.now() + 25_000;
+    let result: { status: number; stdout: string; stderr: string } | undefined;
+    while (!result) {
+      try { result = JSON.parse(await readFile(report, "utf8")); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT" || Date.now() > deadline) throw error; await new Promise(resolve => setTimeout(resolve, 50)); }
+    }
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stderr, /E\d+:|stack traceback|assertion failed/i);
+    const observed = JSON.parse(result.stdout); assert.equal(observed.status, "STARTUP_CONTRACT_OK");
+    assert.equal(observed.source, code); assert.deepEqual(observed.identity, JSON.parse(await readFile(file, "utf8")).identity);
+  } finally {
+    keys.forEach((key, i) => { if (previous[i] === undefined) delete process.env[key]; else process.env[key] = previous[i]; });
+    if (file) await rm(path.dirname(file), { recursive: true, force: true });
+  }
 });
 
 test("new-launch verification rejects a deliberately failed required readonly invariant with a nonzero Neovim exit", async () => {
