@@ -32,17 +32,14 @@ export default function fixture(pi: ExtensionAPI): void {
       const fail = latest.includes("FAIL_NATIVE");
       const waiting = latest.includes("WAIT_CANCEL");
       const slow = latest.includes("SLOW_STREAM");
-      const intent = latest.match(/(GENERATE_MODEL|GENERATE_MAP|PROPOSAL_HYPOTHESIS|DIALOGUE) intent/)?.[1] ?? "DIALOGUE";
+      const intent = latest.match(/(GENERATE_MODEL|PROPOSAL_HYPOTHESIS|DIALOGUE) intent/)?.[1] ?? "DIALOGUE";
       const round = Number(latest.match(/Retrieval round (\d+)\//)?.[1] ?? 0);
       const sourceText = context.messages.filter(m => m.role === "user").map(m => typeof m.content === "string" ? m.content : JSON.stringify(m.content)).join("\n");
       const blocks = sentSources(sourceText);
       const pick = (path: string, line: number) => { const block = blocks.find(b => b.path === path && b.lines.has(line)); return block ? { path, ref: block.ref, start: line, end: line, quote: block.lines.get(line)! } : undefined; };
       let payload: Record<string, unknown>;
       if (!learning) payload = {};
-      else if (intent === "GENERATE_MAP") {
-        const main = pick("src/main.ts", 1);
-        payload = { reply: "日本語の学習回答です。通常の実装チャットとは独立しています。\n\n## 責任と失敗\n固定した根拠だけを確認しました。省略したファイルは未確認です。", map: main ? [{ stage: "結果を受け取る", stageReason: "返却する処理だから", importanceReason: "結果と失敗の契約を理解するため", flow: "送信する", responsibility: "結果を返すハンドラ", symbol: "submit()", contract: "固定ソースに書かれた文字列を返す", tests: "この収集範囲では未確認", evidence: [main] }] : [] };
-      } else if (intent === "GENERATE_MODEL" && sourceText.includes("LONG_CLAIM_FIXTURE")) {
+      else if (intent === "GENERATE_MODEL" && sourceText.includes("LONG_CLAIM_FIXTURE")) {
         // Long-claim reading QA: one claim without any selectable row, one whose controls follow the long detail.
         const line = pick("src/long-claim.ts", 2);
         payload = {
@@ -63,6 +60,7 @@ export default function fixture(pi: ExtensionAPI): void {
         payload = {
           reply: "固定した対象からモデルを生成しました。引用は照合済みですが、主張の意味は解釈です。",
           modelSummary: "送信から結果までの小さな流れと、その根拠を固定対象から説明します。",
+          ...(main ? { interactions: { entities: [{ id: "main", kind: "module", label: "src/main.ts", evidence: [{ claim: "submit-handler", evidence: 1 }] }, { id: "submit", kind: "function", label: "submit()", evidence: [{ claim: "submit-handler", evidence: 1 }] }], interactions: [{ id: "entry", from: "main", to: "submit", kind: "depends", label: "公開入口", status: "inferred", evidence: [{ claim: "submit-handler", evidence: 1 }] }] } } : {}),
           claims: [
             { id: "submit-handler", kind: "concept", statement: "submit() は結果文字列を返す入口です。", detail: "利用者の送信は submit() に届き、固定された文字列を結果として返します。検証処理はこの固定対象では確認できません。", status: main ? "fact" : "inferred", evidence: main ? [main] : [], ...(main ? { signature: main } : {}), relations: [], challenge: "submit() が例外を投げるように変わったら、利用者フローのどこが変わりますか？" },
             { id: "literal-result", kind: "rule", statement: "結果は固定文字列で、入力に依存しません。", status: main ? "fact" : "inferred", evidence: main ? [main] : [], relations: [{ to: "submit-handler", type: "constrains" }] },

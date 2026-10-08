@@ -38,7 +38,7 @@ for (const stage of stages) {
   hashes[stage.name] = createHash('sha256').update(text.replace(/[0-9a-f]{8,}/g, '<hex>')).digest('hex');
   await writeFile(new URL(`${stage.name}.txt`, root), text);
   await writeFile(new URL(`${stage.name}.html`, root), `<!doctype html><meta charset="utf-8"><title>${escape(stage.name)}</title><style>body{margin:0;background:#101318;color:#e4e7eb}.terminal{position:relative;width:${stage.cols * 10}px;height:${stage.rows * 20}px;font:16px/20px "Noto Sans Mono CJK JP","DejaVu Sans Mono",monospace}.row{height:20px;white-space:pre}.row span{display:inline-block;vertical-align:top}.cursor{position:absolute;height:18px;width:9px;border-bottom:2px solid #e4e7eb;pointer-events:none}</style><main class="terminal">${html}${cursor}</main>`);
-  checks.push({ stage: stage.name, paneVisible: text.includes('理解 · '), scopeIdentity: text.match(/scope ([0-9a-f]{8})/)?.[1], confirmationVisible: text.includes('この固定範囲') && text.includes('snapshot') && !text.includes('理解 · '), draftVisible: text.includes('draft-to-preserve'), changesVisible: text.includes('未commit分 / HEAD'), mapVisible: text.includes('送信する') && text.includes('submit()'), japaneseInputVisible: text.includes('質問：責任'), mainInputVisible: text.includes('main-input-still-active'), mainChatVisible: text.includes('main-chat-probe'), abortedVisible: text.includes('aborted'), failureVisible: text.includes('deterministic native provider failure'), cursor: { x: buffer.cursorX, y: buffer.cursorY } });
+  checks.push({ stage: stage.name, paneVisible: text.includes('理解 · '), scopeIdentity: text.match(/scope ([0-9a-f]{8})/)?.[1], confirmationVisible: text.includes('この固定範囲') && text.includes('snapshot') && !text.includes('理解 · '), draftVisible: text.includes('draft-to-preserve'), changesVisible: text.includes('未commit分 / HEAD'), interactionActionVisible: text.includes('相互作用図をブラウザで開く'), japaneseInputVisible: text.includes('質問：責任'), mainInputVisible: text.includes('main-input-still-active'), mainChatVisible: text.includes('main-chat-probe'), abortedVisible: text.includes('aborted'), failureVisible: text.includes('deterministic native provider failure'), cursor: { x: buffer.cursorX, y: buffer.cursorY } });
 }
 const byName = name => checks.find(c => c.stage === name);
 const textAt = name => { const text = texts.get(name); if (text === undefined) throw new Error(`Missing stage ${name}`); return text; };
@@ -55,7 +55,7 @@ for (const label of ['wide', 'narrow', 'large']) {
 }
 focusChecks.push({ label: 'Ctrl+D-preserves-both-drafts', ok: has('closed-draft-main-120x36', 'main-close-draft-tail') && lacks('closed-draft-main-120x36', '理解 · ') && has('closed-draft-learner-120x36', '学習 > learner-close-draft-tail') });
 focusChecks.push({ label: 'Alt+S-preserves-both-drafts', ok: has('alts-main-120x36', 'alt-s-main-draft') && lacks('alts-main-120x36', '理解 · ') && has('alts-learner-120x36', '学習 > alt-s-learner-draft-tail') });
-focusChecks.push({ label: 'legacy-overview-dive-return', ok: has('point-detail-120x36', '▶M1', 'return "working"', '旧マップ › M1') && has('point-overview-return-120x36', 'M1 送信する', '旧マップ（旧形式') && lacks('point-overview-return-120x36', '▶M1') });
+focusChecks.push({ label: 'retired-map-hidden-claim-evidence-return', ok: lacks('retired-map-120x36', '旧マップ', 'M1 送信する') && has('claim-fixed-evidence-120x36', 'return "working"', '全体 › submit-handler') && has('claim-overview-return-120x36', 'submit() は結果文字列を返す入口です') && lacks('claim-overview-return-120x36', '旧マップ', '▶M1') });
 focusChecks.push({ label: 'near-fullscreen-display', ok: textAt('japanese-focused-120x36').split('\n').some(line => line.includes('╭─ 理解 · ') && line.includes('─╮')) && textAt('japanese-focused-120x36').split('\n').some(line => line.includes('╰─ ') && line.includes('─╯')) });
 focusChecks.push({ label: 'command-focus', ok: has('command-focus-input-120x36', '学習 > command-focus-probe') });
 await writeFile(new URL('focus-render-checks.json', root), JSON.stringify(focusChecks, null, 2));
@@ -124,7 +124,7 @@ const required = [
   ...modelChecks.map(([, ok]) => ok),
   byName('typical-background-120x36')?.paneVisible,
   textAt('wide-first-input-120x36').includes('学習 > wide-first-probe'),
-  byName('grounded-map-120x36')?.mapVisible,
+  byName('retired-map-120x36')?.interactionActionVisible,
   byName('main-input-background-120x36')?.mainInputVisible,
   byName('main-input-background-120x36')?.paneVisible === false,
   byName('japanese-focused-120x36')?.japaneseInputVisible,

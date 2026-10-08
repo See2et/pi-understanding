@@ -1,96 +1,124 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, mkdir, writeFile, chmod, readFile, stat, rm } from "node:fs/promises";
+import path from "node:path";
+import { tmpdir } from "node:os";
 import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { initTheme, theme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
-import { type TUI, type OverlayHandle } from "@earendil-works/pi-tui";
-import { freshLearning, LearningRunner, learningContext, dive, overview, restore, ENTRY, validateMap } from "../src/learning.ts";
-import { UnderstandingPane, terminalText } from "../src/pane.ts";
+import { LearningRunner, learningContext, restore, persistedState, freshState, ENTRY, LEGACY_ENTRY, parseReply } from "../src/learning.ts";
+import { validateInteractions, selectClaim, modelOverview } from "../src/model.ts";
 import { referenceSnippet } from "../src/reference.ts";
-import { diagramHtml } from "../src/diagram.ts";
-import type { Scope } from "../src/scope.ts";
+import { diagramHtml, openDiagram } from "../src/diagram.ts";
+import { interactionFixture } from "./interaction-fixture.ts";
 
-function fixture() {
-  const source = { path: "main.ts", ref: "worktree", digest: "fixed", text: Array.from({ length: 80 }, (_, i) => `pinned line ${i + 1}`).join("\n") };
-  const learning = freshLearning({ id: "id", repository: "repo", root: "/repo", base: "base", head: "head", snapshot: "snapshot", request: { kind: "repository" }, sources: [source], files: [source.path], omitted: 0 } as Scope);
-  const node = { flow: "送信", responsibility: "handler", symbol: "submit()", contract: "fail explicitly", tests: "unverified", evidence: [{ path: source.path, ref: source.ref, start: 50, end: 51, quote: "pinned line 50\npinned line 51" }] };
-  learning.map = [node];
-  return { learning, node, source };
-}
+test("bounded interaction graph reuses exact canonical evidence, validates IDs/endpoints/types and never converts claim relations", () => {
+  const { claims, interactions, source } = interactionFixture();
+  assert.deepEqual(validateInteractions(interactions, claims), interactions);
+  assert.equal(validateInteractions(undefined, claims), undefined);
+  for (const mutate of [
+    (g: typeof interactions) => { g.entities[0]!.id = g.entities[1]!.id; },
+    (g: typeof interactions) => { g.interactions[0]!.to = "missing"; },
+    (g: typeof interactions) => { g.interactions[0]!.evidence[0]!.claim = "missing"; },
+    (g: typeof interactions) => { g.interactions[0]!.evidence[0]!.evidence = 99; },
+    (g: typeof interactions) => { g.entities[0]!.evidence = []; },
+    (g: typeof interactions) => { g.interactions[0]!.evidence.push(g.interactions[0]!.evidence[0]!); },
+    (g: typeof interactions) => { g.entities[0]!.label = "x".repeat(121); },
+    (g: typeof interactions) => { g.entities[0]!.kind = "concept" as typeof g.entities[0]["kind"]; },
+    (g: typeof interactions) => { g.interactions[0]!.status = "verified" as typeof g.interactions[0]["status"]; },
+    (g: typeof interactions) => { g.interactions = Array(49).fill(g.interactions[0]); },
+  ]) { const graph = structuredClone(interactions); mutate(graph); assert.throws(() => validateInteractions(graph, claims)); }
+  const unsafeClaims = structuredClone(claims); const unsafeGraph = structuredClone(interactions);
+  unsafeClaims[0]!.id = 'x"onclick="bad'; unsafeGraph.entities[0]!.evidence[0]!.claim = unsafeClaims[0]!.id;
+  assert.throws(() => validateInteractions(unsafeGraph, unsafeClaims), /existing exact claim evidence/);
+  const oversized = structuredClone(claims); oversized[0]!.signature!.quote = "x".repeat(48_000); oversized[0]!.evidence[0]!.quote = Array(8).fill("x".repeat(7_000)).join("\n");
+  assert.throws(() => validateInteractions(interactions, oversized), /persistence budget/);
+  const parsed = parseReply(JSON.stringify({ reply: "model", claims, interactions }), [source]);
+  assert.deepEqual(parsed.interactions, interactions);
+  const bad = structuredClone(claims); bad[0]!.signature!.quote = "invented";
+  assert.throws(() => parseReply(JSON.stringify({ reply: "model", claims: bad, interactions }), [source]), /exact source/);
+  assert.throws(() => parseReply(JSON.stringify({ reply: "model", interactions }), [source]), /existing exact claim evidence/);
+});
 
-test("explicit generation owns map replacement; asks, dive and return retain IDs, old maps and selection reset", async () => {
-  const { learning, node, source } = fixture();
-  const old = restore([{ type: "custom", customType: ENTRY, data: { version: 1, repository: "repo", active: "id", scopes: { id: learning } } }], "repo").scopes.id!;
-  assert.deepEqual(validateMap(old.map, [source]), old.map);
-  dive(learning, 1); const map = structuredClone(learning.map);
-  let intent = "";
-  const ctx = { model: { id: "gpt-test", provider: "test" }, modelRegistry: { streamSimple: (_model: unknown, context: unknown) => {
-    intent = JSON.stringify(context);
-    const stream = createAssistantMessageEventStream();
-    const message = { role: "assistant", api: "openai-responses", provider: "test", model: "gpt-test", timestamp: 0, stopReason: "stop", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, content: [{ type: "text", text: JSON.stringify({ reply: "map summary", map: [{ ...node, stage: "結果", stageReason: "返却する段階", importanceReason: "失敗を理解する" }] }) }] } as AssistantMessage;
+test("single explicit model owner commits graph with claims; ordinary dialogue/proposals and invalid generation retain both", async () => {
+  const { learning, claims, interactions } = interactionFixture();
+  let payload: unknown = { reply: "生成", modelSummary: "summary", claims, interactions }; let calls = 0;
+  const ctx = { model: { id: "gpt-test", provider: "test" }, modelRegistry: { streamSimple: () => {
+    calls++; const stream = createAssistantMessageEventStream();
+    const message = { role: "assistant", api: "openai-responses", provider: "test", model: "gpt-test", timestamp: 0, stopReason: "stop", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, content: [{ type: "text", text: JSON.stringify(payload) }] } as AssistantMessage;
     stream.push({ type: "done", reason: "stop", message }); stream.end(message); return stream;
   } } } as unknown as ExtensionContext;
   const runner = new LearningRunner();
-  await runner.ask(ctx, learning, "please generate a map naturally", () => {}, () => {});
-  assert.deepEqual(learning.map, map); assert.equal(learning.selectedPoint, 1); assert.match(intent, /DIALOGUE intent/);
-  overview(learning); assert.deepEqual(learning.map, map); assert.equal(learning.selectedPoint, undefined);
-  assert.throws(() => dive(learning, 2)); dive(learning, 1);
-  await runner.ask(ctx, learning, "explicit map", () => {}, () => {}, "map");
-  assert.equal(learning.selectedPoint, undefined); assert.equal(learning.map[0]!.stage, "結果"); assert.equal(learning.mapSummary, "map summary");
-  assert.throws(() => validateMap([{ ...node, stageReason: "x".repeat(501) }], [source]), /stageReason/);
+  await runner.ask(ctx, learning, "model", () => {}, () => {}, "model");
+  selectClaim(learning, "entry"); const graph = structuredClone(learning.interactions), prior = structuredClone(learning.claims);
+  for (const intent of ["dialogue", "proposal"] as const) await runner.ask(ctx, learning, "question", () => {}, () => {}, intent);
+  assert.deepEqual(learning.interactions, graph); assert.deepEqual(learning.claims, prior); assert.equal(learning.selectedClaim, "entry");
+  diagramHtml(learning); assert.equal(calls, 3, "viewing does not invoke models");
+  modelOverview(learning); // Supply the whole fixed source again, not only selected signature lines.
+  payload = { reply: "invalid", modelSummary: "replacement", claims, interactions: { ...interactions, interactions: [{ ...interactions.interactions[0], to: "missing" }] } };
+  await runner.ask(ctx, learning, "model", () => {}, () => {}, "model");
+  assert.deepEqual(learning.interactions, graph); assert.deepEqual(learning.claims, prior);
+  payload = { reply: "graph unavailable", modelSummary: "conceptual only", claims };
+  await runner.ask(ctx, learning, "model", () => {}, () => {}, "model");
+  assert.equal(learning.interactions, undefined); assert.throws(() => diagramHtml(learning), /まだありません/);
 });
 
-test("selected point reaches the learner context without changing the map or scope, and overview clears it", () => {
-  const { learning, node, source } = fixture();
-  learning.map.push({ ...node, flow: "別の重要点", symbol: "other()", evidence: [{ path: source.path, ref: source.ref, start: 70, end: 70, quote: "pinned line 70" }] });
-  const snapshot = structuredClone(learning.scope);
-  const map = structuredClone(learning.map);
-  dive(learning, 2);
-  const context = learningContext(learning, "ここが失敗すると？");
-  const input = JSON.stringify(context.messages);
-  assert.match(input, /Selected map point/);
-  assert.match(input, /M2/);
-  assert.match(input, /別の重要点/);
-  assert.match(input, /other\(\)/);
-  assert.match(input, /pinned line 70/);
-  assert.deepEqual(learning.scope, snapshot);
-  assert.deepEqual(learning.map, map);
-  overview(learning);
-  assert.match(JSON.stringify(learningContext(learning, "全体の役割は？").messages), /Selected map point: none/);
+test("historical map-only/current source-free models restore without conversion or deletion; malformed graph remains preserved but unavailable", async () => {
+  const { learning } = interactionFixture(); const state = freshState(learning.scope.repository); state.active = learning.scope.id; state.scopes[learning.scope.id] = learning;
+  const historic = structuredClone(state); historic.version = 1;
+  const old = historic.scopes[learning.scope.id]!;
+  old.map = [{ flow: "historic-map", evidence: [{ quote: "legacy-original", annotations: [{ unrecognized: true }] }] }]; old.selectedPoint = 1; old.mapSummary = "historic summary";
+  old.claims = undefined; old.interactions = undefined;
+  const before = structuredClone(historic);
+  const restored = restore([{ type: "custom", customType: LEGACY_ENTRY, data: historic }], state.repository).scopes[learning.scope.id]!;
+  assert.deepEqual(historic, before); assert.deepEqual(restored.map, old.map); assert.equal(restored.selectedPoint, 1); assert.equal(restored.mapSummary, old.mapSummary);
+  assert.equal(restored.claims, undefined); assert.equal(restored.interactions, undefined); assert.throws(() => diagramHtml(restored), /まだありません/);
+  assert.doesNotMatch(JSON.stringify(learningContext(restored, "質問")), /historic-map|legacy-original|Selected map point/);
+  const root = await mkdtemp(path.join(tmpdir(), "interaction-restore-"));
+  try {
+    const saved = persistedState(state, root);
+    const current = restore([{ type: "custom", customType: ENTRY, data: saved }], state.repository, root).scopes[learning.scope.id]!;
+    assert.deepEqual(current.interactions, learning.interactions); assert.match(diagramHtml(current), /注文IDに決済結果を保存/);
+    const corrupt = structuredClone(saved); corrupt.scopes[learning.scope.id]!.interactions!.interactions[0]!.to = "missing";
+    const unavailable = restore([{ type: "custom", customType: ENTRY, data: corrupt }], state.repository, root).scopes[learning.scope.id]!;
+    assert.deepEqual(unavailable.interactions, corrupt.scopes[learning.scope.id]!.interactions);
+    assert.deepEqual(unavailable.claims, learning.claims); assert.throws(() => diagramHtml(unavailable), /検証に失敗/);
+    const claimsOnly = structuredClone(saved); delete claimsOnly.scopes[learning.scope.id]!.interactions;
+    assert.throws(() => diagramHtml(restore([{ type: "custom", customType: ENTRY, data: claimsOnly }], state.repository, root).scopes[learning.scope.id]!), /まだありません/);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("pinned snippet defaults to selected evidence; explicit ranges/all and legacy path/ref forms; no live source", async () => {
-  const { learning } = fixture(); dive(learning, 1);
-  const snippet = await referenceSnippet(learning, "");
-  assert.match(snippet, /worktree:main.ts:50-51/); assert.match(snippet, /50: pinned line 50/); assert.doesNotMatch(snippet, /52: pinned/);
-  assert.match(await referenceSnippet(learning, "main.ts head"), /50-51/);
-  assert.match(await referenceSnippet(learning, "main.ts head 10-12"), /10: pinned line 10/);
-  assert.match(await referenceSnippet(learning, "main.ts all"), /80: pinned line 80/);
-  overview(learning); assert.match(await referenceSnippet(learning, "main.ts"), /1-40/);
-  await assert.rejects(() => referenceSnippet(learning, "main.ts 79-90"), /outside/);
-  await assert.rejects(() => referenceSnippet(learning, "not-captured.ts"), /not captured/);
-});
-
-test("stable minimap stays visible across chat; direct dive renders exact quote and Ctrl+O preserves unsent draft", () => {
-  initTheme("dark", false);
-  const { learning } = fixture();
-  const pane = new UnderstandingPane({ terminal: { columns: 120, rows: 48 }, requestRender: () => {} } as TUI, theme, () => learning, { ask: text => { if (text === "overview") overview(learning); }, cancel: () => {}, close: () => {}, running: () => false });
-  let hidden = false;
-  pane.handle = { focus: () => { pane.focused = true; }, unfocus: () => { pane.focused = false; }, setHidden: (value: boolean) => { hidden = value; } } as OverlayHandle;
-  pane.focus(); pane.handleInput("draft");
-  const before = terminalText(pane.render(115).join("\n"));
-  learning.turns.push({ role: "assistant", text: "long chat\n".repeat(100), timestamp: 0 });
-  assert.match(terminalText(pane.render(115).join("\n")), /全体図: M1/);
-  assert.match(before, /重要性の理由は未記録/);
-  dive(learning, 1); const detail = terminalText(pane.render(115).join("\n"));
-  assert.match(detail, /▶M1/); assert.match(detail, /worktree:main.ts:50-51/); assert.match(detail, /pinned line 50/);
-  pane.handleInput("\x0f"); assert.equal(learning.selectedPoint, undefined); assert.equal(pane.view().input, "draft");
-  pane.release(); assert.equal(hidden, true); pane.focus(); assert.equal(hidden, false); assert.equal(pane.view().input, "draft");
+test("static directed lanes, entity/detail/claim/evidence anchors and identity exclude conversations and hypotheses", () => {
+  const { learning } = interactionFixture(); learning.turns.push({ role: "user", text: "private-dialogue", timestamp: 0 }); learning.proposal = "private-proposal";
   const html = diagramHtml(learning);
-  assert.match(html, /id="M1"/); assert.match(html, /href="#M1"/); assert.match(html, /href="#overview"/); assert.match(html, /pinned line 50/);
-  assert.doesNotMatch(html, /<script|long chat|https?:\/\/[^" ]+\.js/);
-  const twelve = fixture(); twelve.learning.map = Array.from({ length: 12 }, (_, i) => ({ ...twelve.node, stage: `段階${i}${"長いラベル".repeat(20)}` }));
-  const small = new UnderstandingPane({ terminal: { columns: 80, rows: 24 }, requestRender: () => {} } as TUI, theme, () => twelve.learning, { ask: () => {}, cancel: () => {}, close: () => {}, running: () => false });
-  const compact = terminalText(small.render(76).join("\n"));
-  for (let i = 1; i <= 12; i++) assert.ok(compact.includes(`M${i}`), `navigation target M${i} remains visible despite long stages`);
+  for (const text of ["MODULE", "FUNCTION", "DATA STORE", "reads", "writes", "calls", "marker-end", 'id="entity-checkout"', 'href="#interaction-save-receipt"', 'id="evidence-storage-3"', 'href="#claim-storage"', "固定対象", "snapshot", "unknown", "意味の正しさを保証しません", "await save(id, receipt)"]) assert.ok(html.includes(text), text);
+  assert.doesNotMatch(html, /<script|private-dialogue|private-proposal|id="M\d/);
+  assert.match(html, /script-src 'none'/);
+  const ids = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map(m => m[1]));
+  for (const [, id] of html.matchAll(/href="#([^"]+)"/g)) assert.ok(ids.has(id), `anchor exists: ${id}`);
+});
+
+test("local diagram uses private file and existing opener only; unavailable model fails before opener; no implicit sharing", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "interaction-open-")), oldPath = process.env.PATH;
+  const log = path.join(root, "opened.jsonl");
+  try {
+    const bin = path.join(root, "bin"); await mkdir(bin);
+    const opener = path.join(bin, process.platform === "darwin" ? "open" : "xdg-open");
+    await writeFile(opener, `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2))+'\\n');\n`); await chmod(opener, 0o755); process.env.PATH = `${bin}:${oldPath}`;
+    const { learning } = interactionFixture();
+    const file = await openDiagram(learning);
+    try { assert.deepEqual(JSON.parse((await readFile(log, "utf8")).trim()), [file]); assert.equal((await stat(file)).mode & 0o777, 0o600); assert.equal((await stat(path.dirname(file))).mode & 0o777, 0o700); assert.match(await readFile(file, "utf8"), /相互作用図/); }
+    finally { await rm(path.dirname(file), { recursive: true, force: true }); }
+    learning.interactions = undefined; await assert.rejects(openDiagram(learning), /まだありません/);
+    assert.equal((await readFile(log, "utf8")).trim().split("\n").length, 1);
+  } finally { process.env.PATH = oldPath; await rm(root, { recursive: true, force: true }); }
+});
+
+test("pinned reference defaults to selected claim evidence; explicit ranges/all never use retired point selection", async () => {
+  const { learning } = interactionFixture(); selectClaim(learning, "storage");
+  assert.match(await referenceSnippet(learning, ""), /src\/checkout.ts:1-1/);
+  assert.match(await referenceSnippet(learning, "src/checkout.ts head 4-6"), /4:   const order/);
+  assert.match(await referenceSnippet(learning, "src/checkout.ts all"), /8: }/);
+  modelOverview(learning); learning.selectedPoint = 1;
+  await assert.rejects(referenceSnippet(learning, ""), /select/);
+  await assert.rejects(referenceSnippet(learning, "src/not-captured.ts"), /not captured/);
 });

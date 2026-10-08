@@ -5,10 +5,11 @@ import { initTheme, theme } from "../node_modules/@earendil-works/pi-coding-agen
 import { CURSOR_MARKER, KeybindingsManager, TUI_KEYBINDINGS, setKeybindings, visibleWidth, type OverlayHandle, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { UnderstandingPane, terminalText, type PaneView } from "../src/pane.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { freshLearning, dive, overview, LearningRunner, type Learning } from "../src/learning.ts";
-import { selectClaim, openClaimEvidence, modelBack, skipChallenge, type Claim } from "../src/model.ts";
+import { freshLearning, LearningRunner, type Learning } from "../src/learning.ts";
+import { selectClaim, openClaimEvidence, modelBack, modelOverview as overview, skipChallenge, type Claim } from "../src/model.ts";
 import { hash, type Scope } from "../src/scope.ts";
 import fixture, { longDetail, LONG_MARKERS } from "./fixture-provider.ts";
+import { interactionFixture } from "./interaction-fixture.ts";
 
 const code = Array.from({ length: 40 }, (_, i) => `  export function step${i + 1}(value: string) { return value; }`).join("\n");
 const source = { path: "src/learning.ts", ref: "worktree", digest: "fixed", text: code };
@@ -36,15 +37,14 @@ function mount(learning: Learning | undefined, columns = 120, rows = 36, mode = 
     asked.push(text);
     if (!learning) return;
     if (text === "overview") overview(learning);
-    else if (text === "back") { if (learning.selectedPoint) overview(learning); else modelBack(learning); }
-    else if (text.startsWith("select ")) { selectClaim(learning, text.slice(7)); learning.selectedPoint = undefined; }
+    else if (text === "back") modelBack(learning);
+    else if (text.startsWith("select ")) selectClaim(learning, text.slice(7));
     else if (/^evidence/.test(text)) openClaimEvidence(learning, Number(text.split(" ")[1] ?? 1));
     else if (text === "skip") skipChallenge(learning);
     else if (text === "quiet") learning.questions = false;
     else if (text === "questions on") learning.questions = true;
     else if (text === "proposal clear") learning.proposal = undefined;
     else if (text === "annotations toggle") learning.annotationsVisible = learning.annotationsVisible === false;
-    else if (/^dive \d+$/.test(text)) { dive(learning, Number(text.slice(5))); learning.selectedClaim = undefined; learning.evidenceView = undefined; }
     else return;
     if (production) pane.navigate();
   };
@@ -334,23 +334,31 @@ test("drafts, highlight and dialogue position survive resize and geometry remoun
   assert.match(screen, /▸ 現状 学習AIはツールを持ちません/); assert.match(screen, /↑\d+行/);
 });
 
-test("legacy 12-point map remains reachable by keys and dive; clearly marked as old, not the new model", () => {
-  const learning = modelLearning(); learning.claims = undefined;
-  learning.map = Array.from({ length: 12 }, (_, i) => ({ flow: `流れ${i + 1}`, responsibility: "owner", symbol: `fn${i + 1}()`, contract: "c", tests: "t", evidence: [ev(i + 1, i + 1)] }));
-  const { pane, asked, text } = mount(learning, 80, 24);
-  let screen = text();
-  for (let i = 1; i <= 12; i++) assert.ok(screen.includes(`M${i}`), `M${i} visible in pinned minimap`);
-  assert.match(screen, /旧マップ（旧形式/); assert.match(screen, /モデルを生成する/);
-  pane.handleInput("\x1b[B"); text(); pane.handleInput("\r"); assert.equal(asked.at(-1), "dive 1");
-  screen = text(); assert.match(screen, /▶M1/); assert.match(screen, /旧マップ › M1/);
-  pane.handleInput("\t"); assert.equal(asked.at(-1), "dive 2");
-  pane.handleInput("\r"); assert.equal(asked.at(-1), "back"); assert.equal(learning.selectedPoint, undefined);
+test("historical map payload and selection never expose retired navigation/UI or replace current claims", () => {
+  const learning = modelLearning();
+  learning.map = [{ flow: "historical-only-flow", evidence: [ev(1, 2)] }]; learning.selectedPoint = 1;
+  const original = structuredClone(learning.map);
+  const current = mount(learning, 120, 36);
+  assert.match(current.text(), /Scope は固定/); assert.doesNotMatch(current.text(), /historical-only-flow|旧マップ|M1|dive/);
+  learning.claims = undefined;
+  const old = mount(learning, 80, 24);
+  assert.match(old.text(), /モデルを生成する/); assert.doesNotMatch(old.text(), /historical-only-flow|旧マップ|M1|dive/);
+  old.pane.handleInput("\r"); assert.equal(old.asked.at(-1), "model");
+  assert.deepEqual(learning.map, original); assert.equal(learning.selectedPoint, 1);
+});
+
+test("current graph exposes only an explicit browser action in the pane; no browser chat or legacy navigation", () => {
+  const { learning } = interactionFixture();
+  const { pane, asked, text } = mount(learning, 120, 48);
+  assert.match(text(), /相互作用図をブラウザで開く/);
+  for (let i = 0; i < 3; i++) pane.handleInput("\t");
+  text(); pane.handleInput("\r"); assert.equal(asked.at(-1), "diagram");
 });
 
 test("every view renders exact-width frames within the overlay height at all sizes and both modes", () => {
   const learning = modelLearning(); longDialogue(learning, 12); learning.proposal = "変更案"; learning.questions = false;
   learning.map = [{ flow: "送信", responsibility: "handler", symbol: "submit()", contract: "c", tests: "t", evidence: [ev(1, 2)] }];
-  const views: [string, () => void][] = [["overview", () => overview(learning)], ["claim", () => selectClaim(learning, "no-tools")], ["evidence", () => { selectClaim(learning, "no-tools"); openClaimEvidence(learning, 3); }], ["point", () => { overview(learning); dive(learning, 1); }]];
+  const views: [string, () => void][] = [["overview", () => overview(learning)], ["claim", () => selectClaim(learning, "no-tools")], ["evidence", () => { selectClaim(learning, "no-tools"); openClaimEvidence(learning, 3); }]];
   for (const mode of ["fullscreen", "regular"]) for (const [columns, rows] of [[160, 48], [120, 36], [80, 24], [60, 20], [40, 16], [40, 12]] as const) for (const [name, open] of views) {
     open();
     const { frame } = mount(learning, columns, rows, mode);

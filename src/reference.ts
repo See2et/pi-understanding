@@ -1,14 +1,14 @@
 import { pinnedFile, isWorktree } from "./scope.ts";
-import { selectedNode, addReference, type Learning } from "./learning.ts";
+import { addReference, type Learning } from "./learning.ts";
 import { selectedClaim, claimEvidence } from "./model.ts";
 
 /** Explicit all/ranges; otherwise show selected evidence (or a bounded first page), never live worktree content. */
 export async function referenceSnippet(learning: Learning, specification: string): Promise<string> {
   const claim = selectedClaim(learning);
-  const evidence = claim ? claimEvidence(claim) : selectedNode(learning)?.evidence;
+  const evidence = claim ? claimEvidence(claim) : undefined;
   const match = specification.trim().match(/^(.*?)(?:\s+(base|head|index))?(?:\s+(all|\d+-\d+))?$/)!;
   const file = match[1] || evidence?.[0]?.path;
-  if (!file) throw new Error("reference PATH [base|head|index] [all|START-END] またはdive後にreference");
+  if (!file) throw new Error("reference PATH [base|head|index] [all|START-END] またはselect後にreference");
   const ref = match[2] === "base" ? learning.scope.base : match[2] === "index" ? "index" : !match[1] && evidence?.[0] ? evidence[0].ref : isWorktree(learning.scope.request) ? "worktree" : learning.scope.head;
   const source = await pinnedFile(learning.scope, file, ref);
   const lines = source.text.split("\n");

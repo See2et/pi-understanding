@@ -1,6 +1,6 @@
 import { getMarkdownTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { Input, Markdown, getKeybindings, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type Focusable, type Keybinding, type OverlayHandle, type OverlayOptions, type TUI, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
-import { pointId, pointDetail, stageLabel, importanceReason, type Learning, type Turn } from "./learning.ts";
+import { type Learning, type Turn } from "./learning.ts";
 import { claimChallenge, claimEvidence, selectedClaim, type Claim, type Evidence } from "./model.ts";
 
 // Remove terminal control payloads from untrusted source/model output, including OSC links.
@@ -18,14 +18,14 @@ export type PaneView = { input: string; editor?: Input; offset: number; partial?
 type Color = Parameters<Theme["fg"]>[0];
 type Item = { key: string; command: string };
 type Line = { text: string; item?: number; head?: boolean };
-type ViewKind = "overview" | "claim" | "evidence" | "point";
+type ViewKind = "overview" | "claim" | "evidence";
 type ModelView = { kind: ViewKind; key: string; crumb: string; pinned: string[]; lines: Line[]; items: Item[]; preferred?: string; destination: string; model?: string };
 type Box = { top: number; bottom: number; left: number; right: number };
 
 const KINDS = [["concept", "概念"], ["rule", "ルール"], ["boundary", "境界"], ["behavior", "振る舞い"], ["rationale", "理由"]] as const;
 const RELATIONS: Record<Claim["relations"][number]["type"], string> = { depends: "依存", protects: "保護", constrains: "制約", explains: "理由づけ" };
 // Pure navigation must not pull the dialogue to its latest line.
-const NAVIGATION = /^(?:nvim(?:\s+export)?|annotations(?:\s+(?:on|off|toggle))?|dive\s+M?\d+|overview|back|skip|quiet|questions\s+(?:on|off)|proposal\s+clear|(?:select|claim)\s+\S+|evidence(?:\s+\d+)?)$/i;
+const NAVIGATION = /^(?:nvim(?:\s+export)?|annotations(?:\s+(?:on|off|toggle))?|diagram(?:\s+(?:preview|stop))?|map(?:\s+.*)?|dive(?:\s+.*)?|overview|back|skip|quiet|questions\s+(?:on|off)|proposal\s+clear|(?:select|claim)\s+\S+|evidence(?:\s+\d+)?)$/i;
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 const fit = (text: string, width: number) => truncateToWidth(text, Math.max(0, width), "…", true);
 const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
@@ -204,7 +204,7 @@ export class UnderstandingPane implements Component, Focusable {
   private kindOf(learning: Learning): ViewKind {
     if (learning.evidenceView) return "evidence";
     if (selectedClaim(learning)) return "claim";
-    return learning.selectedPoint && learning.map[learning.selectedPoint - 1] ? "point" : "overview";
+    return "overview";
   }
   private ensureModel(): ModelView | undefined {
     if (this.model) return this.model.view;
@@ -213,11 +213,11 @@ export class UnderstandingPane implements Component, Focusable {
   }
   private step(delta: number, cycle: boolean): void {
     const view = this.ensureModel(); if (!view) return;
-    if (view.kind === "evidence" || view.kind === "point") {
+    if (view.kind === "evidence") {
       if (!cycle) { this.scrollModel(delta); return; }
       const learning = this.current(); if (!learning) return;
-      if (view.kind === "point") { const n = learning.map.length; this.command(`dive ${((learning.selectedPoint ?? 1) - 1 + delta + n) % n + 1}`); }
-      else { const claim = selectedClaim(learning); const list = claim ? claimEvidence(claim) : []; if (list.length < 2) return; const index = Math.max(0, this.shownIndex(list, learning.evidenceView!)); this.command(`evidence ${(index + delta + list.length) % list.length + 1}`); }
+      const claim = selectedClaim(learning); const list = claim ? claimEvidence(claim) : []; if (list.length < 2) return;
+      const index = Math.max(0, this.shownIndex(list, learning.evidenceView!)); this.command(`evidence ${(index + delta + list.length) % list.length + 1}`);
       return;
     }
     if (!cycle && this.model?.view === view) { this.read(view, delta); return; }
@@ -262,7 +262,7 @@ export class UnderstandingPane implements Component, Focusable {
   }
   private activate(): void {
     const view = this.ensureModel(); if (!view) return;
-    if (view.kind === "evidence" || view.kind === "point") { this.back(); return; }
+    if (view.kind === "evidence") { this.back(); return; }
     const index = view.items.findIndex(i => i.key === this.cursorKey);
     if (index < 0) return;
     if (this.model && !this.model.visible.has(index)) { this.reveal = true; this.refresh(); return; }
@@ -281,7 +281,6 @@ export class UnderstandingPane implements Component, Focusable {
     let target: { view: string; cursor: string } | undefined;
     if (learning && claim && learning.evidenceView && command === "back") target = { view: `claim:${claim.id}`, cursor: `evidence:${this.shownIndex(claimEvidence(claim), learning.evidenceView) + 1}` };
     else if (claim) target = { view: "overview", cursor: `claim:${claim.id}` };
-    else if (learning?.selectedPoint) target = { view: "overview", cursor: `point:${learning.selectedPoint}` };
     this.command(command);
     const now = learning && (this.kindOf(learning) === "overview" ? "overview" : selectedClaim(learning) && !learning.evidenceView ? `claim:${learning.selectedClaim}` : undefined);
     // Below a long detail the row just left is revealed, not hidden under the top of the view.
@@ -329,7 +328,6 @@ export class UnderstandingPane implements Component, Focusable {
     const markdown = (value: string) => { for (const line of new Markdown(clean(value), 0, 0, getMarkdownTheme()).render(width)) raw(line); };
     const tag = (claim: Claim) => claim.status === "inferred" ? th.fg("warning", "推論") : th.fg("muted", "現状");
     const kindLabel = (claim: Claim) => KINDS.find(([k]) => k === claim.kind)?.[1] ?? claim.kind;
-    const legacyMinimap = () => wrapTextWithAnsi(`全体図: ${learning.map.map((_n, i) => `${learning.selectedPoint === i + 1 ? "▶" : ""}${pointId(i)}`).join(" ")}`, width);
     const claims = learning.claims ?? [];
     const claim = selectedClaim(learning);
     const running = this.actions.running();
@@ -387,12 +385,6 @@ export class UnderstandingPane implements Component, Focusable {
       }
       return { kind: "claim", key: `claim:${claim.id}`, crumb: `全体 › ${kindLabel(claim)} › ${claim.id}`, pinned: [], lines, items, preferred: evidence.length ? "evidence:1" : items[0]?.key, destination: `${claim.id}「${claim.statement}」` };
     }
-    const point = learning.selectedPoint ? learning.map[learning.selectedPoint - 1] : undefined;
-    if (point) {
-      markdown(pointDetail(point, pointId(learning.selectedPoint! - 1)));
-      return { kind: "point", key: `point:${learning.selectedPoint}`, crumb: `旧マップ › ${pointId(learning.selectedPoint! - 1)}`, pinned: legacyMinimap(), lines, items, destination: `旧マップ ${pointId(learning.selectedPoint! - 1)}` };
-    }
-
     if (claims.length) {
       if (learning.modelSummary) text(learning.modelSummary);
       text("現状=引用あり · 推論=AIの解釈（意味は未保証）", "muted");
@@ -411,6 +403,8 @@ export class UnderstandingPane implements Component, Focusable {
         }
       }
       raw("");
+      if (learning.interactions && !learning.interactionIssue) item("action:diagram", "diagram", wrapped("相互作用図をブラウザで開く（推論・公開なし）"));
+      else text(learning.interactionIssue ?? "相互作用図は未記録です。model で明示的に再生成できます。", "muted");
       item("action:model", running ? "" : "model", wrapped(running ? "生成・回答中… 進捗は会話欄（Ctrl+C で中止）" : "モデルを作り直す（置き換え · GPT呼出し）", "muted"));
     } else {
       raw(th.bold("モデルはまだありません"));
@@ -425,20 +419,15 @@ export class UnderstandingPane implements Component, Focusable {
       text(learning.proposal);
       item("action:proposal-clear", "proposal clear", wrapped("仮説を解除", "muted"));
     }
-    if (learning.map.length) {
-      raw("");
-      raw(th.fg("warning", "旧マップ（旧形式 · コード中心の地図。新しいモデルではありません）"));
-      learning.map.forEach((n, i) => item(`point:${i + 1}`, `dive ${i + 1}`, [...wrapped(`${pointId(i)} ${n.flow} → ${n.responsibility} / ${n.symbol}`), ...wrapped(`段階: ${stageLabel(n)}`, "muted"), ...wrapped(`重要性: ${importanceReason(n)}`, "muted")]));
-    }
     if (!learning.questions) { raw(""); item("action:questions-on", "questions on", wrapped("問いは非表示中 · 再開する", "muted")); }
-    return { kind: "overview", key: "overview", crumb: claims.length ? "全体 · モデル" : learning.map.length ? "全体 · 旧マップのみ" : "全体", pinned: !claims.length && learning.map.length ? legacyMinimap() : [], lines, items, preferred: items.find(i => i.key.startsWith("claim:"))?.key ?? "action:model", destination: "全体", model: claims.map(c => c.id).join("\n") };
+    return { kind: "overview", key: "overview", crumb: claims.length ? "全体 · モデル" : "全体", pinned: [], lines, items, preferred: items.find(i => i.key.startsWith("claim:"))?.key ?? "action:model", destination: "全体", model: claims.map(c => c.id).join("\n") };
   }
   /** Keep the UI highlight stable per committed view, returning to the item just left. */
   private sync(view: ModelView): void {
     if (view.key !== this.viewKey) {
       const previous = this.viewKey; this.viewKey = view.key; this.modelScroll = 0; this.reveal = false;
       let preferred = view.preferred;
-      if (view.kind === "overview" && previous && /^(claim|point):/.test(previous)) preferred = previous;
+      if (view.kind === "overview" && previous && /^claim:/.test(previous)) preferred = previous;
       if (view.kind === "claim" && previous?.startsWith("evidence:")) preferred = `evidence:${previous.split(":").at(-1)}`;
       this.cursorKey = view.items.some(i => i.key === preferred) ? preferred : view.items[0]?.key;
     }
@@ -605,7 +594,7 @@ export class UnderstandingPane implements Component, Focusable {
 
     const wide = inner >= 100;
     const kind = this.kindOf(learning);
-    const leftW = wide ? clamp(Math.round(inner * (kind === "evidence" || kind === "point" ? .58 : .46)), 40, inner - 41) : inner;
+    const leftW = wide ? clamp(Math.round(inner * (kind === "evidence" ? .58 : .46)), 40, inner - 41) : inner;
     const chatW = wide ? inner - leftW - 1 : inner;
     const modelW = Math.max(2, leftW - 2); const chatContent = Math.max(2, chatW - 2);
     const view = this.build(learning, modelW); this.sync(view);
@@ -638,13 +627,13 @@ export class UnderstandingPane implements Component, Focusable {
     else out.push(B("├") + this.segment(inner, destination, "", color) + B("┤"));
     out.push(row(inputLine));
     // Ordered by priority: the border truncates from the right on narrow terminals.
-    const reading = view.kind === "evidence" || view.kind === "point";
+    const reading = view.kind === "evidence";
     // An overflowing claim/overview is read with ↑↓ (controls are taken as they come into view); Tab jumps between controls.
     const long = !!this.model && view.lines.length > this.model.height;
     const hints = [
       running ? "Ctrl+C 中止" : "",
       draft.trim() ? "Enter 送信" : reading ? "Enter/← 戻る" : this.cursorKey?.startsWith("action:") ? "Enter 実行" : view.items.length ? "Enter 開く" : "",
-      view.kind === "evidence" ? "Tab 次の根拠 · ↑↓ 行" : view.kind === "point" ? "Tab 次の点 · ↑↓ 行" : long ? (view.items.length ? "↑↓ 読む · Tab 選択" : "↑↓ 読む") : view.items.length ? "↑↓/Tab 選択" : "",
+      view.kind === "evidence" ? "Tab 次の根拠 · ↑↓ 行" : long ? (view.items.length ? "↑↓ 読む · Tab 選択" : "↑↓ 読む") : view.items.length ? "↑↓/Tab 選択" : "",
       view.kind === "evidence" ? "Ctrl+Alt+N Neovim" : "",
       view.kind === "claim" && !draft ? "← 戻る" : "",
       view.kind !== "overview" ? "Ctrl+O 全体" : "",

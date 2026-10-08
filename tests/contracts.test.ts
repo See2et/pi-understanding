@@ -5,8 +5,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { collectScope, pinnedFile, fingerprint, safePath, evidenceText, LIMITS, type Scope, type Source } from "../src/scope.ts";
-import { freshLearning, freshState, restore, ENTRY, validateMap, learningContext, LearningRunner } from "../src/learning.ts";
+import { freshLearning, freshState, restore, ENTRY, learningContext, LearningRunner } from "../src/learning.ts";
 import { diagramHtml } from "../src/diagram.ts";
+import { validateClaims } from "../src/model.ts";
+import { interactionFixture } from "./interaction-fixture.ts";
 import { parseScope } from "../src/extension.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
@@ -62,11 +64,11 @@ test("read boundary rejects traversal, unsafe refs, secrets and symlinks; collec
   } finally { await f.cleanup(); }
 });
 
-test("map evidence checks exact ref, quote and range; prompt truthfully bounds source coverage", () => {
+test("claim evidence checks exact ref, quote and range; prompt truthfully bounds source coverage", () => {
   const source: Source = { path: "src/main.ts", ref: "fixed", digest: "test", text: "line one\nline two\n" };
-  const node = { flow: "submit", responsibility: "handler", symbol: "submit", contract: "return", tests: "unverified", evidence: [{ path: source.path, ref: source.ref, start: 1, end: 2, quote: "line one\nline two" }] };
-  assert.equal(validateMap([node], [source]).length, 1);
-  for (const evidence of [{ ...node.evidence[0], ref: "HEAD" }, { ...node.evidence[0], quote: "invented" }, { ...node.evidence[0], end: 200 }]) assert.throws(() => validateMap([{ ...node, evidence: [evidence] }], [source]));
+  const node = { id: "submit", kind: "behavior", statement: "return", status: "fact", relations: [], evidence: [{ path: source.path, ref: source.ref, start: 1, end: 2, quote: "line one\nline two" }] };
+  assert.equal(validateClaims([node], [source]).length, 1);
+  for (const evidence of [{ ...node.evidence[0], ref: "HEAD" }, { ...node.evidence[0], quote: "invented" }, { ...node.evidence[0], end: 200 }]) assert.throws(() => validateClaims([{ ...node, evidence: [evidence] }], [source]));
   const scope = { id: "id", request: { kind: "repository" }, sources: [source, { ...source, path: "huge", text: "x".repeat(LIMITS.promptBytes) }], files: ["src/main.ts", "huge"], omitted: 3 } as Scope;
   const evidence = evidenceText(scope); assert.equal(evidence.sent.length, 1); assert.equal(evidence.truncated, true); assert.match(evidence.text, /not analyzed/);
 });
@@ -108,9 +110,11 @@ test("native learning streams with no tools or implementation messages, records 
 test("HTML is static escaped SVG, never learner dialogue or arbitrary generated JS", async () => {
   const f = await fixture();
   try {
-    const learning = freshLearning(await collectScope(f.root, { kind: "repository" }));
+    const { learning } = interactionFixture();
     learning.turns.push({ role: "user", text: "learner-private-text", timestamp: 0 });
-    learning.map = [{ flow: '<script>alert("x")</script>', responsibility: "owner", symbol: "f", contract: '<img src=x onerror="x">', tests: "unverified", evidence: [{ path: "x", ref: "fixed", start: 1, end: 1, quote: "</pre><script>x</script>" }] }];
+    learning.interactions!.entities[0]!.label = '<script>alert("x")</script>';
+    learning.interactions!.interactions[0]!.detail = '<img src=x onerror="x">';
+    learning.claims![0]!.signature!.quote = "</pre><script>x</script>";
     const html = diagramHtml(learning); assert.doesNotMatch(html, /<script|<img|learner-private-text/); assert.match(html, /&lt;script&gt;/); assert.match(html, /script-src 'none'/); assert.match(html, /<svg/);
   } finally { await f.cleanup(); }
 });

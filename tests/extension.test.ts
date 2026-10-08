@@ -40,6 +40,8 @@ test("/u and Alt+S open confirmed no-diff repository without inference; model, s
     const reply = new Promise<void>(resolve => { completed = resolve; }); await commands.get("u")!.handler("model", ctx); await reply;
     const state = () => branch.at(-1)!.data; const learning = () => state().scopes[state().active!]!;
     assert.equal(learning().claims?.[0]!.id, "value-rule"); assert.equal(learning().scope.sources.length, 0, "session entry contains only snapshot reference");
+    await commands.get("u")!.handler("diagram", ctx); await commands.get("u")!.handler("diagram preview", ctx);
+    assert.ok(notices.at(-1)!.includes("相互作用図はまだありません")); assert.equal(calls, 1, "unavailable views do not infer");
     await commands.get("u")!.handler("select value-rule", ctx); await commands.get("u")!.handler("evidence 1", ctx);
     assert.equal(learning().evidenceView?.quote, "export const value = 1;");
     assert.deepEqual(learning().evidenceView?.annotations, [{ start: 1, end: 1, text: "固定値を公開する。" }]);
@@ -135,12 +137,17 @@ test("explicit preview command invokes only owned helper names; scope and shutdo
     execFileSync("git", ["add", "."], { cwd: root });
     execFileSync("git", ["-c", "user.name=QA", "-c", "user.email=qa@example.invalid", "commit", "-qm", "fixture"], { cwd: root });
     const scope = await collectScope(root, { kind: "repository" }); const learning = freshLearning(scope);
-    learning.map = [{ flow: "read", responsibility: "owner", symbol: "value", contract: "constant", tests: "unverified", evidence: [{ path: "main.ts", ref: "worktree", start: 1, end: 1, quote: "export const value = 1;" }] }];
+    learning.claims = [{ id: "value", kind: "rule", statement: "固定値を公開する", status: "fact", evidence: [{ path: "main.ts", ref: "worktree", start: 1, end: 1, quote: "export const value = 1;" }], relations: [] }];
+    learning.interactions = { entities: [{ id: "main", kind: "module", label: "main.ts", evidence: [{ claim: "value", evidence: 1 }] }, { id: "value", kind: "data-store", label: "value", evidence: [{ claim: "value", evidence: 1 }] }], interactions: [{ id: "export-value", from: "main", to: "value", kind: "depends", label: "固定値を公開", status: "inferred", evidence: [{ claim: "value", evidence: 1 }] }] };
     const state = freshState(scope.repository); state.active = scope.id; state.scopes[scope.id] = learning;
     const branch = [{ type: "custom", customType: ENTRY, data: state }];
     const bin = path.join(root, "fake-bin"), log = path.join(root, "calls.jsonl"), failRemove = path.join(root, "fail-remove"), holdRemove = path.join(root, "hold-remove"), removeEntered = path.join(root, "remove-entered"); await mkdir(bin);
     await writeFile(path.join(bin, "home-preview"), `#!${process.execPath}\nconst fs = require('node:fs'); const args = process.argv.slice(2); fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args)+'\\n'); if(args[0] === 'remove' && fs.existsSync(${JSON.stringify(failRemove)})) { process.stderr.write('fixture removal denied'); process.exit(1); } if(args[0] === 'url') process.stdout.write('https://fixture.ts.net:8443/'); if(args[0] === 'remove' && fs.existsSync(${JSON.stringify(holdRemove)})) { fs.writeFileSync(${JSON.stringify(removeEntered)}, 'entered'); const timer = setInterval(() => { if(!fs.existsSync(${JSON.stringify(holdRemove)})) { clearInterval(timer); } }, 5); }\n`);
-    await chmod(path.join(bin, "home-preview"), 0o755); process.env.PATH = `${bin}:${oldPath}`;
+    await chmod(path.join(bin, "home-preview"), 0o755);
+    const opened = path.join(root, "opened.json");
+    const opener = path.join(bin, process.platform === "darwin" ? "open" : "xdg-open");
+    await writeFile(opener, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(opened)}, JSON.stringify(process.argv.slice(2)));\n`); await chmod(opener, 0o755);
+    process.env.PATH = `${bin}:${oldPath}`;
     let command!: Parameters<ExtensionAPI["registerCommand"]>[1];
     const events = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void>>(); const notices: string[] = [];
     let learnerCalls = 0;
@@ -154,7 +161,14 @@ test("explicit preview command invokes only owned helper names; scope and shutdo
     understanding({ registerCommand: (_name: string, definition: typeof command) => { command = definition; }, registerShortcut: () => {}, registerTool: () => {}, on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) => { events.set(name, handler); }, appendEntry: (customType: string, data: typeof state) => { branch.push({ type: "custom", customType, data }); } } as unknown as ExtensionAPI);
     shutdown = () => events.get("session_shutdown")!({}, context);
     await events.get("session_start")!({}, context);
-    await command.handler("overview", context); await command.handler("dive 1", context); await command.handler("open", context);
+    await command.handler("overview", context); await command.handler("open", context);
+    for (const commandText of ["map", "map anything", "dive 1", "dive M1", "dive invalid"]) await command.handler(commandText, context);
+    assert.equal(learnerCalls, 0, "retired commands never fall through to dialogue");
+    assert.ok(notices.some(text => text.includes("廃止")));
+    await command.handler("diagram", context);
+    const [localFile] = JSON.parse(await readFile(opened, "utf8")) as string[];
+    try { assert.match(await readFile(localFile!, "utf8"), /export const value/); assert.equal(learnerCalls, 0); }
+    finally { await rm(path.dirname(localFile!), { recursive: true, force: true }); }
     await assert.rejects(() => readFile(log), /ENOENT/);
     await command.handler("diagram preview", context); assert.ok(notices.some(text => /https:\/\/fixture\.ts\.net:8443\/document-/.test(text)));
     await command.handler("scope repository", context);

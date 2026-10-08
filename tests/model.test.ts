@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionContext, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
-import { freshLearning, LearningRunner, learningContext, loadYomiyasu, parseReply, validateMap } from "../src/learning.ts";
+import { freshLearning, LearningRunner, learningContext, loadYomiyasu, parseReply } from "../src/learning.ts";
 import { validateClaims, selectClaim, selectedClaim, modelOverview, modelBack, openClaimEvidence, claimChallenge, skipChallenge } from "../src/model.ts";
 import { hash, type Scope, type Source } from "../src/scope.ts";
 import { storeSnapshot } from "../src/snapshot.ts";
@@ -37,7 +37,6 @@ test("claim evidence/signatures/tests share exact validation, original range num
   const partial = { ...source, text: "original line 50\noriginal line 51", startLine: 50 };
   const proof = { ...evidence, start: 50, end: 51, quote: partial.text };
   assert.equal(validateClaims([{ ...claim, evidence: [proof], signature: undefined, tests: [] }], [partial])[0]!.evidence[0]!.start, 50);
-  assert.equal(validateMap([{ flow: "f", responsibility: "r", symbol: "s", contract: "c", tests: "t", evidence: [proof] }], [partial])[0]!.evidence[0]!.start, 50);
   assert.throws(() => parseReply(JSON.stringify({ reply: "x", need: [{ path: "x", start: 1, end: 200, why: "x" }] }), []), /bounded exact/);
 });
 

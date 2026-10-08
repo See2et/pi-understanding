@@ -1,5 +1,17 @@
 # pi-understanding 学習体験 ゼロベース再設計提案
 
+## 現行実装との差分（相互作用viewへの更新）
+
+以下の本文は旧sourceを調べた時点の設計提案です。行番号・診断・未実装案を現行仕様として扱わないでください。特に旧mapのカード表示、M番号navigation、`map`/`dive`の互換維持案（§4.6、§4.10、§5、§7、§8）は、その後のユーザー指示により廃止しました。
+
+現行仕様はREADMEの「モデルのbackend契約」「相互作用viewのbackend契約」に記載しています。claims/modelSummaryを説明とexact根拠のcanonical ownerとして維持し、明示`model`生成だけが任意のbounded `interactions`を同時にcommitします。実体はmodule/function/data-store/external、相互作用はlabel付き有向edgeで、すべてcanonical claim引用へのlinkを必要とします。概念的なclaim関係からcalls/reads/writesを捏造しません。
+
+`/u diagram`は保存済みデータだけから静的HTML/SVGをlocal browserに開きます。一行一相互作用と実体の入出力一覧で、edgeの重なりを避けつつ実体/detail/根拠/claimのanchorをたどれます。Web chat、viewを開く際の推論・自動読込・自動公開はありません。`/u diagram preview`だけが既存home-preview/Tailscale Serveで明示公開し、`stop`とscope/session変更は所有する公開とserverを停止します。
+
+旧sessionのmap/mapSummary/selectedPointは非表示payloadとして保持し、表示・navigation・学習contextには使いません。図のない現行モデルも読めます。復元時の不正graphは元データを保持したまま利用不可にし、明示再生成を案内します。保存や引用・scope・会話分離・Neovim・annotationsの契約は変えません。本文中のsnapshot-as-tree等の別提案を、この変更に含めて実装したものではありません。
+
+---
+
 - 位置づけ: 設計提案のみ。source・tests・README・ユーザー設定は変更していない。実装は含まない。
 - 作成: designer（claude-opus-5-5）。調査は読み取りのみで、テスト・型検査・実機Piでの再現は実行していない。
 - 対象: `src/*.ts`、`tests/*`、`README.md`、Pi 1.0.4 の docs（`tui.md`、`keybindings.md`、`extensions.md`、`terminal-setup.md`、`tmux.md`）と、同梱の `@earendil-works/pi-tui` / `pi-coding-agent` 1.0.4 の `dist`。

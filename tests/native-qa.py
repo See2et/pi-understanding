@@ -169,9 +169,11 @@ send('alt-s-learner-draft'); send(ALT_S); send('alt-s-main-draft'); capture('alt
 send(ALT_S); send('-tail'); capture('alts-learner-120x36', 120, 36)
 send(ENTER); drain(3); send(ALT_S); send(ENTER); drain(1); capture('alts-submitted-120x36', 120, 36)
 learner_probes.append('alt-s-learner-draft-tail'); main_probes.append('alt-s-main-draft')
-command('/understand map'); drain(3); command('/understand overview'); capture('grounded-map-120x36', 120, 36)
-send('dive 1\r'); capture('point-detail-120x36', 120, 36)
-send('\x0f'); capture('point-overview-return-120x36', 120, 36); send('\x1b')
+# Retired map/dive commands must not regenerate, infer, or expose M-number UI.
+command('/understand map'); command('/understand dive 1'); command('/understand overview')
+capture('retired-map-120x36', 120, 36)
+send('select submit-handler\r'); send('evidence 1\r'); capture('claim-fixed-evidence-120x36', 120, 36)
+send('\x0f'); capture('claim-overview-return-120x36', 120, 36); send('\x1b')
 # Hidden overlay must not own ordinary input.
 send('main-input-still-active'); capture('main-input-background-120x36', 120, 36)
 send('\x15'); focus_roundtrip('wide', 120, 36)

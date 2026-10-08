@@ -38,7 +38,13 @@ export type Claim = {
   relations: { to: string; type: "depends" | "protects" | "constrains" | "explains" }[];
   challenge?: string;
 };
-export type ModelState = { claims?: Claim[]; modelSummary?: string; selectedClaim?: string; evidenceView?: Evidence; annotationsVisible?: boolean; questions: boolean; skippedChallenges?: string[]; proposal?: string };
+/** References reuse canonical claim evidence (signature → tests → evidence), never copied quotes. */
+export type EvidenceLink = { claim: string; evidence: number };
+export type InteractionEntity = { id: string; kind: "module" | "function" | "data-store" | "external"; label: string; detail?: string; evidence: EvidenceLink[] };
+export type Interaction = { id: string; from: string; to: string; kind: "calls" | "reads" | "writes" | "sends" | "receives" | "depends"; label: string; detail?: string; status: "fact" | "inferred"; evidence: EvidenceLink[] };
+export type InteractionView = { entities: InteractionEntity[]; interactions: Interaction[] };
+export const INTERACTION_LIMITS = { entities: 24, interactions: 48, links: 6 };
+export type ModelState = { claims?: Claim[]; interactions?: InteractionView; interactionIssue?: string; modelSummary?: string; selectedClaim?: string; evidenceView?: Evidence; annotationsVisible?: boolean; questions: boolean; skippedChallenges?: string[]; proposal?: string };
 export type ReadRequest = { path: string; ref?: string; start: number; end: number; why: string };
 export type SearchRequest = { text: string; why: string };
 export type ReadRecord = { path: string; ref: string; start?: number; end?: number; digest?: string; status: "sent" | "fetched" | "searched" | "unavailable" | "excluded" | "uncaptured" | "budget"; reason?: string };
@@ -86,6 +92,42 @@ export function validateClaims(value: unknown, sources: Source[]): Claim[] {
   if (claims.reduce((bytes, c) => bytes + claimEvidence(c).reduce((n, e) => n + Buffer.byteLength(e.quote), 0), 0) > 96_000) throw new Error("Model evidence exceeds persistence budget");
   if (claims.some(c => c.relations.some(r => !ids.has(r.to) || r.to === c.id))) throw new Error("Relations must refer to other real claims");
   return claims;
+}
+/** Generation and restore share the same bounded graph/reference contract. No conceptual relation conversion. */
+export function validateInteractions(raw: unknown, claims: Claim[]): InteractionView | undefined {
+  if (raw === undefined) return undefined;
+  const graph = raw as InteractionView | null;
+  if (!graph || !Array.isArray(graph.entities) || !Array.isArray(graph.interactions) || !graph.entities.length || graph.entities.length > INTERACTION_LIMITS.entities || !graph.interactions.length || graph.interactions.length > INTERACTION_LIMITS.interactions) throw new Error("Interaction view requires 1-24 entities and 1-48 interactions");
+  const entityIds = new Set<string>(), edgeIds = new Set<string>();
+  const referenced = new Map<string, Evidence>();
+  const identifier = (value: unknown, ids: Set<string>) => {
+    const id = bounded(value, 64, "interaction ID");
+    if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(id) || ids.has(id)) throw new Error("Interaction IDs must be unique ASCII identifiers");
+    ids.add(id); return id;
+  };
+  const links = (raw: unknown): EvidenceLink[] => {
+    if (!Array.isArray(raw) || !raw.length || raw.length > INTERACTION_LIMITS.links) throw new Error("Entities and interactions require 1-6 canonical evidence links");
+    const seen = new Set<string>();
+    return raw.map(value => {
+      const link = value as EvidenceLink | null;
+      const claim = link && claims.find(c => c.id === link.claim);
+      const evidence = claim && Number.isInteger(link!.evidence) && claimEvidence(claim)[link!.evidence - 1];
+      if (!link || typeof link.claim !== "string" || link.claim.length > 64 || !/^[A-Za-z][A-Za-z0-9_-]*$/.test(link.claim) || !evidence || typeof evidence.path !== "string" || typeof evidence.ref !== "string" || !Number.isSafeInteger(evidence.start) || !Number.isSafeInteger(evidence.end) || evidence.start < 1 || evidence.end < evidence.start || evidence.end - evidence.start > 60 || typeof evidence.quote !== "string" || !evidence.quote.trim() || evidence.quote.split("\n").length !== evidence.end - evidence.start + 1 || Buffer.byteLength(evidence.quote) > 96_000) throw new Error("Interaction evidence must reference existing exact claim evidence");
+      const key = `${link.claim}:${link.evidence}`;
+      if (seen.has(key)) throw new Error("Duplicate interaction evidence link");
+      seen.add(key); referenced.set(key, evidence); return { claim: link.claim, evidence: link.evidence };
+    });
+  };
+  const entities = graph.entities.map(n => {
+    if (!n || !["module", "function", "data-store", "external"].includes(n.kind)) throw new Error("Invalid interaction entity kind");
+    return { id: identifier(n.id, entityIds), kind: n.kind, label: bounded(n.label, 120, "entity label"), ...(n.detail === undefined ? {} : { detail: bounded(n.detail, 1200, "entity detail") }), evidence: links(n.evidence) };
+  });
+  const interactions = graph.interactions.map(n => {
+    if (!n || !entityIds.has(n.from) || !entityIds.has(n.to) || !["calls", "reads", "writes", "sends", "receives", "depends"].includes(n.kind) || !["fact", "inferred"].includes(n.status)) throw new Error("Invalid directed interaction endpoints/kind/status");
+    return { id: identifier(n.id, edgeIds), from: n.from, to: n.to, kind: n.kind, status: n.status, label: bounded(n.label, 160, "interaction label"), ...(n.detail === undefined ? {} : { detail: bounded(n.detail, 1200, "interaction detail") }), evidence: links(n.evidence) };
+  });
+  if ([...referenced.values()].reduce((bytes, proof) => bytes + Buffer.byteLength(proof.quote), 0) > 96_000) throw new Error("Interaction evidence exceeds persistence budget");
+  return { entities, interactions };
 }
 /** Pure navigation: these functions never perform inference, refresh, or I/O. */
 export function selectClaim(state: ModelState, id: string): void {
